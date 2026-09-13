@@ -18,7 +18,7 @@
 # 阶段总览：
 #   [1/7] 环境准备   —— 检查并安装依赖（系统/Docker/JDK21/Maven，Maven 走阿里云镜像）
 #   [2/7] 拉取代码   —— starter + admin（main 分支）+ admin-ui（main），源自动探测/降级
-#   [3/7] 构建 starter —— mvn install（微服务依赖 starter 3.0.0 及新能力）
+#   [3/7] 构建 starter —— mvn install（微服务依赖 starter 2.2.3 及新能力）
 #   [4/7] 构建后端   —— Maven 打包 5 个服务可执行 jar
 #   [5/7] 生成配置   —— .env 凭据 + Nacos 共享配置提示
 #   [6/7] 启动服务   —— Docker: compose up（含基础设施）；NO_DOCKER: java -jar 逐个启动
@@ -127,7 +127,7 @@ apt_docker_ce_selfheal() {
   docker compose version >/dev/null 2>&1
 }
 
-# 从 admin pom 提取 ypbin-starter.version（形如 <ypbin-starter.version>3.0.0</...>）
+# 从 admin pom 提取 ypbin-starter.version（形如 <ypbin-starter.version>2.2.3</...>）
 starter_version_from_pom() {
   local pom="$1"
   [ -f "$pom" ] || return 1
