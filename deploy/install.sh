@@ -18,7 +18,7 @@
 # 阶段总览：
 #   [1/7] 环境准备   —— 检查并安装依赖（系统/Docker/JDK21/Maven，Maven 走阿里云镜像）
 #   [2/7] 拉取代码   —— starter + admin（main 分支）+ admin-ui（main），源自动探测/降级
-#   [3/7] 构建 starter —— mvn install（微服务依赖 starter 2.2.3 及新能力）
+#   [3/7] 构建 starter —— mvn install（微服务依赖 starter 3.0.0 及新能力）
 #   [4/7] 构建后端   —— Maven 打包 5 个服务可执行 jar
 #   [5/7] 生成配置   —— .env 凭据 + Nacos 共享配置提示
 #   [6/7] 启动服务   —— Docker: compose up（含基础设施）；NO_DOCKER: java -jar 逐个启动
@@ -36,11 +36,16 @@
 #   REDIS_PASSWORD=                Redis 密码（Docker 模式自动随机生成；NO_DOCKER 用外部 Redis
 #                                  有密码时须传入（导入 Nacos 共享配置用），无认证可留空）
 #   MYSQL_ROOT_PASSWORD=           Docker 模式内建 MySQL 密码（必填）
+#   AI_MODEL_SECRET_KEY=           AI 模型 API Key 的加密密钥（**必填**，16/24/32 字节）。
+#                                  用于加解密库内已存的模型密钥，**必须长期保持不变**——换新值后旧密文
+#                                  无法解密。生成：openssl rand -base64 32
 #   NACOS_AUTH_TOKEN= NACOS_AUTH_IDENTITY_KEY= NACOS_AUTH_IDENTITY_VALUE=
 #                                  Nacos 服务端鉴权凭据（自动随机生成，一般无需手传；
 #                                  NACOS_AUTH_TOKEN 需 Base64 且解码后 ≥32 字节）
 #   INTERNAL_TOKEN=                /internal/** 服务间 Feign 调用凭证（守卫校验，自动随机生成，
 #                                  auth/system/ai 共享一致值，一般无需手传）
+#   GATEWAY_SIGN_TOKEN=            网关身份头签名标记（防伪造，自动随机生成；gateway 签发、
+#                                  auth/system/ai 校验，一般无需手传）
 #   REGISTRY_PREFIX=               Docker 镜像加速前缀（如 docker.m.daocloud.io/；留空=官方源）
 #   NO_DOCKER=1                    无 Docker 模式：java -jar 直接启动
 # ============================================================
@@ -122,7 +127,7 @@ apt_docker_ce_selfheal() {
   docker compose version >/dev/null 2>&1
 }
 
-# 从 admin pom 提取 ypbin-starter.version（形如 <ypbin-starter.version>2.2.3</...>）
+# 从 admin pom 提取 ypbin-starter.version（形如 <ypbin-starter.version>3.0.0</...>）
 starter_version_from_pom() {
   local pom="$1"
   [ -f "$pom" ] || return 1
@@ -490,7 +495,11 @@ rand_hex() { # $1=字节数，输出 2 倍长度小写十六进制
 
 if [ ! -f "$ENV_FILE" ]; then
   MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-YpbinRoot$(date +%s)}"
-  AI_MODEL_SECRET_KEY="${AI_MODEL_SECRET_KEY:-YpbinAiKey2026_32bytes!!}"
+  # AI 模型密钥的加密密钥：不接受内置默认值——公开已知的默认值等同未加密；也不随机生成——
+  # 一旦换新 .env（分支部署各自目录）旧密文将永久无法解密。必须由运维显式提供且长期保持不变。
+  AI_MODEL_SECRET_KEY="${AI_MODEL_SECRET_KEY:-}"
+  [ -n "$AI_MODEL_SECRET_KEY" ] \
+    || die "未设置 AI_MODEL_SECRET_KEY（AI 模型 API Key 的加密密钥，16/24/32 字节，须长期保持不变）。生成：openssl rand -base64 32"
   # Nacos 服务端鉴权凭据：token 与身份标识值随机生成，避免固定默认值入库
   NACOS_AUTH_TOKEN="${NACOS_AUTH_TOKEN:-$(rand_b64_48)}"
   NACOS_AUTH_IDENTITY_KEY="${NACOS_AUTH_IDENTITY_KEY:-serverIdentity}"
@@ -552,6 +561,18 @@ if [ "$NO_DOCKER" = "1" ]; then
 else
   env_key_backfill REDIS_PASSWORD 'rand_hex 16'
 fi
+
+# AI_MODEL_SECRET_KEY 不在补生成范围内：它加密库内数据，不能自动生成（换值即旧密文不可解密）。
+# 这里只做存在性校验，覆盖「旧 .env 尚未包含该键」与「环境变量未传」两种情况，避免 compose
+# 到第 6 步才以 :? 失败，也避免再次退化成公开默认值。
+check_required_key() { # $1=键名 $2=生成命令提示
+  local key="$1" hint="$2" val
+  val="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -z "$val" ]; then
+    die "${key} 未配置（${hint}）。请写入 ${ENV_FILE}，或用环境变量传入后重跑"
+  fi
+}
+check_required_key AI_MODEL_SECRET_KEY 'AI 模型 API Key 的加密密钥，16/24/32 字节且须长期不变，生成：openssl rand -base64 32'
 
 # ---------- [5.5/7] 启动基础设施并初始化（Nacos 配置 + MySQL 库表）----------
 # Docker 模式：先只启动基础设施（nacos/redis/mysql），配置导入和建库完成后再启动业务服务
