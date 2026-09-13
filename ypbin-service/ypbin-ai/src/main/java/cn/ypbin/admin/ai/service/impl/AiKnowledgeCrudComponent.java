@@ -333,7 +333,7 @@ public class AiKnowledgeCrudComponent {
         if (distinctIds.contains(null)) {
             throw new BusinessException("知识库 ID 不能为空");
         }
-        List<AiKnowledgeBase> kbs = kbMapper.selectBatchIds(distinctIds);
+        List<AiKnowledgeBase> kbs = kbMapper.selectByIds(distinctIds);
         if (kbs.size() != distinctIds.size()) {
             throw new BusinessException("知识库不存在");
         }

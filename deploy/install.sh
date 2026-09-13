@@ -497,6 +497,7 @@ if [ ! -f "$ENV_FILE" ]; then
   NACOS_AUTH_IDENTITY_VALUE="${NACOS_AUTH_IDENTITY_VALUE:-$(rand_hex 32)}"
   # 内部 Feign 调用凭证（/internal/** 守卫，auth/system/ai 共享一致值），随机生成
   INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(rand_hex 32)}"
+  GATEWAY_SIGN_TOKEN="${GATEWAY_SIGN_TOKEN:-$(rand_hex 32)}"
   # Redis：Docker 模式随机密码（与 compose requirepass / Nacos 共享配置一致）；
   # NO_DOCKER 用外部 Redis，默认留空=不认证（导入 Nacos 时删 password 行），有密码时以 REDIS_PASSWORD=xxx 传入
   if [ "$NO_DOCKER" = "1" ]; then
@@ -512,6 +513,7 @@ NACOS_AUTH_TOKEN=$NACOS_AUTH_TOKEN
 NACOS_AUTH_IDENTITY_KEY=$NACOS_AUTH_IDENTITY_KEY
 NACOS_AUTH_IDENTITY_VALUE=$NACOS_AUTH_IDENTITY_VALUE
 INTERNAL_TOKEN=$INTERNAL_TOKEN
+GATEWAY_SIGN_TOKEN=$GATEWAY_SIGN_TOKEN
 REDIS_PASSWORD=$REDIS_PASSWORD
 NACOS_ADDR=${NACOS_ADDR:-nacos:8848}
 SENTINEL_ADDR=${SENTINEL_ADDR:-sentinel-dashboard:8858}
@@ -544,6 +546,7 @@ env_key_backfill NACOS_AUTH_TOKEN 'rand_b64_48'
 env_key_backfill NACOS_AUTH_IDENTITY_KEY 'printf serverIdentity'
 env_key_backfill NACOS_AUTH_IDENTITY_VALUE 'rand_hex 32'
 env_key_backfill INTERNAL_TOKEN 'rand_hex 32'
+env_key_backfill GATEWAY_SIGN_TOKEN 'rand_hex 32'
 if [ "$NO_DOCKER" = "1" ]; then
   env_key_backfill REDIS_PASSWORD 'printf ""'
 else
@@ -651,12 +654,14 @@ if [ -n "$NACOS_TOKEN" ]; then
         sed -e "s/\${MYSQL_ROOT_PASSWORD}/${MYSQL_ROOT_PASSWORD}/g" \
             -e "s/\${REDIS_PASSWORD}/${REDIS_PASSWORD}/g" \
             -e "s/\${INTERNAL_TOKEN}/${INTERNAL_TOKEN}/g" \
+            -e "s/\${GATEWAY_SIGN_TOKEN}/${GATEWAY_SIGN_TOKEN}/g" \
             "$NACOS_DIR/$cfg.yaml" > "$TMP_CFG"
       else
         # REDIS_PASSWORD 为空（NO_DOCKER 外部 Redis 不认证）→ 删除 password 行，等价不配置密码；
         # INTERNAL_TOKEN 仍无条件替换（缺失/为空时 system 守卫 fail-closed，见 ypbin.internal.token 注释）
         sed -e "s/\${MYSQL_ROOT_PASSWORD}/${MYSQL_ROOT_PASSWORD}/g" \
             -e "s/\${INTERNAL_TOKEN}/${INTERNAL_TOKEN}/g" \
+            -e "s/\${GATEWAY_SIGN_TOKEN}/${GATEWAY_SIGN_TOKEN}/g" \
             -e "/password: \${REDIS_PASSWORD}/d" \
             "$NACOS_DIR/$cfg.yaml" > "$TMP_CFG"
       fi

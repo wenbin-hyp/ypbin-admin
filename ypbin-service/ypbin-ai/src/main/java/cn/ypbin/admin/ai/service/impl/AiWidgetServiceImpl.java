@@ -18,6 +18,7 @@ import cn.ypbin.starter.tenant.core.TenantContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
@@ -43,6 +44,9 @@ public class AiWidgetServiceImpl implements AiWidgetService {
     private static final Logger log = LoggerFactory.getLogger(AiWidgetServiceImpl.class);
 
     private static final int TOKEN_BYTES = 16;
+
+    /** 匿名问答同步等待上限：远程模型无响应时及时失败，避免请求线程无限阻塞 */
+    private static final Duration ANSWER_BLOCK_TIMEOUT = Duration.ofSeconds(120);
 
     private final AiKnowledgeBaseMapper kbMapper;
     private final ObjectProvider<AiChatService> aiChatServiceProvider;
@@ -92,7 +96,7 @@ public class AiWidgetServiceImpl implements AiWidgetService {
                 () -> aiChatService.chatWithKnowledge(
                         "widget-" + kb.getId(), question, String.valueOf(kb.getId()))
                     .collectList()
-                    .block());
+                    .block(ANSWER_BLOCK_TIMEOUT));
             return tokens == null ? "" : String.join("", tokens);
         } catch (IllegalStateException e) {
             // 模型未配置/密钥缺失等环境问题：记录日志并向调用方暴露明确的业务错误（非静默降级）
