@@ -366,7 +366,12 @@ public class AiKnowledgeCrudComponent {
             Files.createDirectories(dir);
             String safeName = (filename == null || filename.isBlank())
                 ? "document" : filename.replaceAll("[\\\\/:*?\"<>|]", "_");
-            Path target = dir.resolve(docId + "-" + safeName);
+            Path normalizedDir = dir.normalize();
+            Path target = normalizedDir.resolve(docId + "-" + safeName).normalize();
+            // 纵深防御：即便文件名清洗规则被绕过，也保证最终路径仍落在目标目录内（防路径穿越）
+            if (!target.startsWith(normalizedDir)) {
+                throw new BusinessException("文件名非法，拒绝落盘");
+            }
             Files.write(target, bytes);
             return target.toAbsolutePath().toString();
         } catch (IOException e) {
