@@ -21,6 +21,7 @@ import cn.ypbin.admin.ai.model.req.AiKnowledgeBaseUpdateReq;
 import cn.ypbin.admin.ai.model.resp.AiDocumentVO;
 import cn.ypbin.admin.ai.model.resp.AiKnowledgeBaseResp;
 import cn.ypbin.admin.ai.service.AiDocumentVectorizer;
+import cn.ypbin.admin.common.util.LogSanitizer;
 import cn.ypbin.starter.ai.rag.AiRagService;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.crud.model.PageQuery;
@@ -169,7 +170,8 @@ public class AiKnowledgeCrudComponent {
                 results.add(uploadDocument(knowledgeBaseId, file));
             } catch (Exception e) {
                 failed++;
-                log.warn("[ypbin-ai] 批量上传单个文件失败: filename={}", file.getOriginalFilename(), e);
+                log.warn("[ypbin-ai] 批量上传单个文件失败: filename={}",
+                LogSanitizer.sanitize(file.getOriginalFilename()), e);
             }
         }
         if (failed > 0 && results.isEmpty()) {

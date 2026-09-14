@@ -11,6 +11,7 @@ package cn.ypbin.admin.ai.service.impl;
 
 import cn.ypbin.admin.ai.model.req.AiDocumentImportReq;
 import cn.ypbin.admin.ai.model.resp.AiDocumentVO;
+import cn.ypbin.admin.common.util.LogSanitizer;
 import cn.ypbin.starter.core.exception.BusinessException;
 import com.rometools.rome.feed.synd.SyndEntry;
 import com.rometools.rome.feed.synd.SyndFeed;
@@ -125,7 +126,7 @@ public class AiKnowledgeImportComponent {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("[ypbin-ai] 抓取 URL 失败: url={}", url, e);
+            log.error("[ypbin-ai] 抓取 URL 失败: url={}", LogSanitizer.sanitize(url), e);
             throw new BusinessException("抓取 URL 失败：" + url);
         }
         if (content.isBlank()) {
@@ -166,7 +167,7 @@ public class AiKnowledgeImportComponent {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("[ypbin-ai] 解析 Sitemap 失败: url={}", sitemapUrl, e);
+            log.error("[ypbin-ai] 解析 Sitemap 失败: url={}", LogSanitizer.sanitize(sitemapUrl), e);
             throw new BusinessException("解析 Sitemap 失败：" + sitemapUrl);
         }
         if (urls.isEmpty()) {
@@ -199,7 +200,7 @@ public class AiKnowledgeImportComponent {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("[ypbin-ai] 解析 RSS/Atom 失败: url={}", feedUrl, e);
+            log.error("[ypbin-ai] 解析 RSS/Atom 失败: url={}", LogSanitizer.sanitize(feedUrl), e);
             throw new BusinessException("解析 RSS/Atom 失败：" + feedUrl);
         }
         if (entries.isEmpty()) {
