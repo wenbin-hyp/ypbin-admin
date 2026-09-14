@@ -563,16 +563,25 @@ else
 fi
 
 # AI_MODEL_SECRET_KEY 不在补生成范围内：它加密库内数据，不能自动生成（换值即旧密文不可解密）。
-# 这里只做存在性校验，覆盖「旧 .env 尚未包含该键」与「环境变量未传」两种情况，避免 compose
-# 到第 6 步才以 :? 失败，也避免再次退化成公开默认值。
-check_required_key() { # $1=键名 $2=生成命令提示
-  local key="$1" hint="$2" val
-  val="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+# 这里做「存在性 + 长度」前置校验，覆盖「旧 .env 尚未包含该键」「未通过环境变量传入」「长度非法」三种情况，
+# 把失败点从第 6 步 compose 的 :? 与更晚的 AI 服务启动，提前到配置阶段；也避免再次退化成公开默认值。
+check_required_key() { # $1=键名 $2=生成命令提示 $3=允许的字节长度（空格分隔）
+  local key="$1" hint="$2" allowed="$3" val bytes
+  # 环境变量优先（与脚本其它键一致：显式 export 的应生效），其次读 .env
+  val="${!key:-}"
   if [ -z "$val" ]; then
-    die "${key} 未配置（${hint}）。请写入 ${ENV_FILE}，或用环境变量传入后重跑"
+    val="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
   fi
+  if [ -z "$val" ]; then
+    die "${key} 未配置（${hint}）。请写入 ${ENV_FILE}，或在执行本脚本前 export ${key}=... 后重跑"
+  fi
+  bytes="$(printf '%s' "$val" | wc -c | tr -d ' ')"
+  case " $allowed " in
+    *" $bytes "*) ;;
+    *) die "${key} 长度必须为 ${allowed} 字节（当前 ${bytes} 字节，${hint}）" ;;
+  esac
 }
-check_required_key AI_MODEL_SECRET_KEY 'AI 模型 API Key 的加密密钥，16/24/32 字节且须长期不变，生成：openssl rand -base64 32'
+check_required_key AI_MODEL_SECRET_KEY '生成：openssl rand -base64 32' '16 24 32'
 
 # ---------- [5.5/7] 启动基础设施并初始化（Nacos 配置 + MySQL 库表）----------
 # Docker 模式：先只启动基础设施（nacos/redis/mysql），配置导入和建库完成后再启动业务服务
