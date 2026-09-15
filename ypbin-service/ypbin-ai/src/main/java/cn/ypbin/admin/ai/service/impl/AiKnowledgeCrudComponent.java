@@ -21,7 +21,7 @@ import cn.ypbin.admin.ai.model.req.AiKnowledgeBaseUpdateReq;
 import cn.ypbin.admin.ai.model.resp.AiDocumentVO;
 import cn.ypbin.admin.ai.model.resp.AiKnowledgeBaseResp;
 import cn.ypbin.admin.ai.service.AiDocumentVectorizer;
-import cn.ypbin.admin.common.util.LogSanitizer;
+import cn.ypbin.starter.core.util.LogSanitizer;
 import cn.ypbin.starter.ai.rag.AiRagService;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.crud.model.PageQuery;

@@ -10,7 +10,7 @@
 package cn.ypbin.admin.system.config;
 
 import cn.ypbin.admin.common.config.InternalProperties;
-import cn.ypbin.admin.common.util.LogSanitizer;
+import cn.ypbin.starter.core.util.LogSanitizer;
 import cn.ypbin.admin.system.api.constant.InternalTokenConstants;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.core.exception.GlobalErrorCode;

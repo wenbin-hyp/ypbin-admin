@@ -12,7 +12,7 @@ package cn.ypbin.admin.ai.service.impl;
 import cn.ypbin.admin.ai.entity.AiQueryLog;
 import cn.ypbin.admin.ai.mapper.AiQueryLogMapper;
 import cn.ypbin.admin.ai.model.resp.KbQueryResult;
-import cn.ypbin.admin.common.util.LogSanitizer;
+import cn.ypbin.starter.core.util.LogSanitizer;
 import cn.ypbin.starter.ai.chat.AiChatService;
 import cn.ypbin.starter.ai.rag.AiRagService;
 import cn.ypbin.starter.core.exception.BusinessException;

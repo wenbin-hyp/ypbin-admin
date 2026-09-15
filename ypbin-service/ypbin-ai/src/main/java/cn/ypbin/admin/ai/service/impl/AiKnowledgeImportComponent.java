@@ -11,7 +11,7 @@ package cn.ypbin.admin.ai.service.impl;
 
 import cn.ypbin.admin.ai.model.req.AiDocumentImportReq;
 import cn.ypbin.admin.ai.model.resp.AiDocumentVO;
-import cn.ypbin.admin.common.util.LogSanitizer;
+import cn.ypbin.starter.core.util.LogSanitizer;
 import cn.ypbin.starter.core.exception.BusinessException;
 import com.rometools.rome.feed.synd.SyndEntry;
 import com.rometools.rome.feed.synd.SyndFeed;
