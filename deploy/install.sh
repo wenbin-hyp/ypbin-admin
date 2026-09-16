@@ -294,6 +294,40 @@ compose_up_diagnose() {
   return 12
 }
 
+# 逐个校验基础设施与核心服务容器是否真的在运行。
+# 现场教训：[7/7] 原本只探测网关 /actuator/health——网关起来了就打印「部署完成」，
+# 而 ypbin-system/auth/ai 可能因依赖未就绪处于崩溃重启循环，使用者直到打开页面才发现。
+check_service_containers() {
+  local spec container status restarts failed=0
+  for container in ypbin-mysql ypbin-redis ypbin-nacos; do
+    status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)"
+    if [ "$status" != "running" ]; then
+      warn "$container 容器状态异常：$status"
+      docker logs --tail 15 "$container" 2>&1 | sed 's/^/    /' || true
+      failed=1
+    fi
+  done
+  for spec in $SERVICES; do
+    # $SERVICES 的第二个字段就是 container_name（compose 里显式声明为 ypbin-xxx），不要再加前缀
+    container="$(printf '%s' "$spec" | cut -d: -f2)"
+    status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)"
+    restarts="$(docker inspect -f '{{.RestartCount}}' "$container" 2>/dev/null || echo 0)"
+    if [ "$status" != "running" ]; then
+      warn "$container 容器状态异常：$status（重启 $restarts 次）"
+      docker logs --tail 15 "$container" 2>&1 | sed 's/^/    /' || true
+      failed=1
+    elif [ "${restarts:-0}" -gt 0 ] 2>/dev/null; then
+      warn "$container 运行中，但重启过 $restarts 次（可能曾因依赖未就绪失败，建议确认日志）"
+    else
+      ok "$container 运行中"
+    fi
+  done
+  if [ "$failed" != "0" ]; then
+    warn "有容器未处于运行状态。排查：docker compose -f $ROOT/ypbin-admin/deploy/docker-compose.yml logs --tail 50 <容器名>"
+  fi
+  return 0
+}
+
 # 安装前端依赖：放宽 pnpm 拉取超时并自动重试一次。
 # 现场教训：大包（@iconify/json ~95MB、@turbo/linux-64 ~19MB）在 pnpm 默认 60s 拉取超时下会中断，
 # 报 [23] The operation was aborted due to timeout；此时即使已复用 1600+ 个包，整个安装仍算失败。
@@ -1131,6 +1165,10 @@ for i in $(seq 1 24); do
   [ "$i" = "24" ] && warn "网关健康检查超时（服务可能仍在启动，查看 $ROOT/logs/ 或 docker compose logs）"
   sleep 5
 done
+# 网关 HTTP 通过 ≠ 其它服务起来了：再逐个核对容器状态（崩溃/重启循环会在这里暴露）
+if [ "$NO_DOCKER" != "1" ]; then
+  check_service_containers
+fi
 
 echo ""
 echo "================================================"
