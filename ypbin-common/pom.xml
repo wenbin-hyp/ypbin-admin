@@ -15,6 +15,15 @@
     <description>微服务版公共基础设施：安全上下文（LoginUser/IdentityContext）、跨域注解、常量</description>
 
     <dependencies>
+        <!-- sa-token 会话统一存 Redis：
+             网关与 auth 早已接入 Redis DAO，但 ypbin-system 等其它服务没有 => 它们在查询 sa-token 会话时
+             读的是**本 JVM 内存 DAO**（空），表现为「在线用户列表恒为空」——会话其实都在 Redis 里。
+             放在 common 让所有服务共用同一套会话存储，避免同类不一致在别处再现。 -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-redis-template</artifactId>
+            <version>${sa-token.version}</version>
+        </dependency>
         <!-- 安全上下文：LoginUser/UserContext/IdentityContext（身份头模式） -->
         <dependency>
             <groupId>cn.ypbin</groupId>
