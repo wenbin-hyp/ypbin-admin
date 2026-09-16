@@ -13,10 +13,13 @@ import cn.ypbin.admin.system.entity.SysTrackEvent;
 import cn.ypbin.admin.system.mapper.SysTrackEventMapper;
 import cn.ypbin.admin.system.model.query.TrackEventQuery;
 import cn.ypbin.admin.system.model.resp.TrackEventResp;
+import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
+import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
 import cn.ypbin.admin.system.model.resp.TrackTrendResp;
 import cn.ypbin.admin.system.model.vo.TrackEventExportVo;
 import cn.ypbin.admin.system.service.TrackEventService;
+import cn.ypbin.admin.system.service.support.TrackQueryParams;
 import cn.ypbin.admin.system.service.support.TrackTrendFiller;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.crud.model.PageResult;
@@ -25,6 +28,7 @@ import cn.ypbin.starter.excel.util.ExcelUtils;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -42,12 +46,6 @@ import org.springframework.util.StringUtils;
 @Service
 public class TrackEventServiceImpl extends BaseServiceImpl<SysTrackEventMapper, SysTrackEvent>
     implements TrackEventService {
-
-    /** 趋势统计天数下限 */
-    private static final int MIN_TREND_DAYS = 1;
-
-    /** 趋势统计天数上限 */
-    private static final int MAX_TREND_DAYS = 90;
 
     /** 结果标识：成功 */
     private static final int SUCCESS_FLAG = 1;
@@ -77,13 +75,33 @@ public class TrackEventServiceImpl extends BaseServiceImpl<SysTrackEventMapper, 
 
     @Override
     public List<TrackTrendResp> eventTrend(int days) {
-        if (days < MIN_TREND_DAYS || days > MAX_TREND_DAYS) {
-            throw new BusinessException("统计天数必须在 1 到 90 之间");
-        }
+        TrackQueryParams.requireDays(days);
         LocalDate today = LocalDate.now();
-        LocalDate startDate = today.minusDays(days - 1L);
-        List<TrackTrendResp> rows = baseMapper.selectDailyTrend(startDate.atStartOfDay());
+        List<TrackTrendResp> rows = baseMapper.selectDailyTrend(statisticStart(days));
         return TrackTrendFiller.fill(days, today, TrackTrendFiller.indexByDate(rows));
+    }
+
+    @Override
+    public List<TrackTopEventResp> topEvents(int days, int limit) {
+        TrackQueryParams.requireDays(days);
+        TrackQueryParams.requireLimit(limit);
+        return baseMapper.selectTopEvents(statisticStart(days), limit);
+    }
+
+    @Override
+    public List<TrackAppCountResp> appDistribution(int days) {
+        TrackQueryParams.requireDays(days);
+        return baseMapper.selectAppDistribution(statisticStart(days));
+    }
+
+    /**
+     * 统计窗口起点（含当天）。
+     *
+     * @param days 天数（调用方已校验）
+     * @return 起始时间
+     */
+    private LocalDateTime statisticStart(int days) {
+        return LocalDate.now().minusDays(days - 1L).atStartOfDay();
     }
 
     @Override

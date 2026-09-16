@@ -10,7 +10,9 @@
 package cn.ypbin.admin.system.mapper;
 
 import cn.ypbin.admin.system.entity.SysTrackEvent;
+import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
+import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
 import cn.ypbin.admin.system.model.resp.TrackTrendResp;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
@@ -96,4 +98,40 @@ public interface SysTrackEventMapper extends BaseMapper<SysTrackEvent> {
         """)
     TrackOverviewResp selectOverview(@Param("todayStart") LocalDateTime todayStart,
                                      @Param("weekStart") LocalDateTime weekStart);
+
+    /**
+     * 事件码排行（降序，取前 limit 个）。
+     *
+     * <p>只回事件码与次数：中文描述由前端按事件目录映射（目录的事实源在 starter 仓）。</p>
+     *
+     * @param since 起始时间（含）
+     * @param limit 返回条数（调用方已校验上限）
+     * @return 事件码与次数
+     */
+    @Select("""
+        SELECT event_code, COUNT(*) AS `count`
+        FROM sys_track_event
+        WHERE received_time >= #{since}
+        GROUP BY event_code
+        ORDER BY `count` DESC
+        LIMIT #{limit}
+        """)
+    List<TrackTopEventResp> selectTopEvents(@Param("since") LocalDateTime since, @Param("limit") int limit);
+
+    /**
+     * 应用维度分布（降序）。
+     *
+     * <p>事件未带 appId 时会聚出一行 app_id 为 NULL 的记录，由前端展示为"未设置"。</p>
+     *
+     * @param since 起始时间（含）
+     * @return 应用与次数
+     */
+    @Select("""
+        SELECT app_id, COUNT(*) AS `count`
+        FROM sys_track_event
+        WHERE received_time >= #{since}
+        GROUP BY app_id
+        ORDER BY `count` DESC
+        """)
+    List<TrackAppCountResp> selectAppDistribution(@Param("since") LocalDateTime since);
 }
