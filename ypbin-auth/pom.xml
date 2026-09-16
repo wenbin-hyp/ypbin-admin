@@ -71,6 +71,12 @@
             <groupId>cn.ypbin</groupId>
             <artifactId>ypbin-starter-log</artifactId>
         </dependency>
+        <!-- 异步执行（@EnableAsync 自动装配 + 统一线程池）：登录日志经 /internal/log-ingest 上报 system，
+             属阻塞式 RPC；不引入本模块时 LogEventListener 的 @Async 被静默忽略，Feign 调用会占用登录请求线程 -->
+        <dependency>
+            <groupId>cn.ypbin</groupId>
+            <artifactId>ypbin-starter-async</artifactId>
+        </dependency>
         <dependency>
             <groupId>cn.ypbin</groupId>
             <artifactId>ypbin-starter-tools</artifactId>

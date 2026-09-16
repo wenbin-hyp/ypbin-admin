@@ -26,6 +26,8 @@ import cn.ypbin.starter.cache.util.CacheUtils;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.core.exception.GlobalErrorCode;
 import cn.ypbin.starter.core.model.R;
+import cn.ypbin.starter.log.dao.LogDao;
+import cn.ypbin.starter.log.model.LogRecord;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import java.time.Duration;
 import java.util.List;
@@ -33,6 +35,7 @@ import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -73,6 +76,8 @@ public class SystemClientImpl implements ISystemClient {
     private final SocialConfigReader socialConfigReader;
     private final SocialBindService socialBindService;
     private final SysMenuService menuService;
+    /** 日志落库端口：system 侧由 {@code DbLogProviders.DbLogDao} 提供，本类只做路由不做映射 */
+    private final LogDao logDao;
 
     @Override
     @GetMapping("/permissions")
@@ -254,5 +259,22 @@ public class SystemClientImpl implements ISystemClient {
     @GetMapping("/social-bindings")
     public R<List<SysUserSocial>> listSocialBindings(@RequestParam("userId") Long userId) {
         return R.ok(socialBindService.listByUserId(userId));
+    }
+
+    /**
+     * 接收 auth/ai 上报的操作/登录日志并落 {@code sys_log}。
+     *
+     * <p>直接委托容器内的 {@link LogDao}（system 侧为 {@code DbLogProviders.DbLogDao}），
+     * 因此 {@code LogRecord → sys_log} 的字段映射全仓只有一份，本端点不做任何二次映射。
+     * 刻意不加 {@code @Log}：否则上报一条日志会再触发一条日志采集，形成自反馈放大。</p>
+     *
+     * <p>异常不吞：{@code LogDao} 落库失败直接上抛，由全局异常处理器转成 HTTP 200 + {@code R.code}，
+     * 调用方（{@code RemoteLogDao}）据 {@code success=false} 上抛并记完整堆栈。</p>
+     */
+    @Override
+    @PostMapping("/log-ingest")
+    public R<Void> ingestLog(@RequestBody LogRecord logRecord) {
+        logDao.add(logRecord);
+        return R.ok();
     }
 }

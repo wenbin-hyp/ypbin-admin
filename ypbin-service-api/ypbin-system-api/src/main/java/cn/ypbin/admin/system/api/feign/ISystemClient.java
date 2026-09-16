@@ -16,10 +16,12 @@ import cn.ypbin.admin.system.model.dto.ConfigValue;
 import cn.ypbin.admin.system.model.dto.SocialAuthConfig;
 import cn.ypbin.admin.system.model.resp.RouteResp;
 import cn.ypbin.starter.core.model.R;
+import cn.ypbin.starter.log.model.LogRecord;
 import java.util.List;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
@@ -160,4 +162,18 @@ public interface ISystemClient {
      */
     @GetMapping("/social-bindings")
     R<List<SysUserSocial>> listSocialBindings(@RequestParam("userId") Long userId);
+
+    /**
+     * 上报一条操作/登录日志（auth、ai 等无数据源的调用方专用）。
+     *
+     * <p>上报的是采集完成的 {@link LogRecord} 本身，system 侧直接交给既有的
+     * {@code LogDao}（{@code DbLogProviders.DbLogDao}）落 {@code sys_log}；
+     * 调用方不得再自建一套字段映射，否则同一张表会有两份口径。</p>
+     *
+     * <p>失败语义：system 不可达时走 {@link ISystemClientFallback} 返回失败 {@code R}，
+     * 调用方必须据 {@code R.success}/{@code R.code} 判定并上抛异常（禁止静默丢弃），
+     * 由调用侧记完整堆栈。</p>
+     */
+    @PostMapping("/log-ingest")
+    R<Void> ingestLog(@RequestBody LogRecord logRecord);
 }
