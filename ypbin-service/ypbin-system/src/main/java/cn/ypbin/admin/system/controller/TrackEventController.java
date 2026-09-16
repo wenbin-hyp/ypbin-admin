@@ -13,9 +13,12 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.ypbin.admin.system.model.query.TrackEventQuery;
 import cn.ypbin.admin.system.model.resp.TrackEventResp;
 import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
+import cn.ypbin.admin.system.model.resp.TrackFunnelStepResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
+import cn.ypbin.admin.system.model.resp.TrackRetentionResp;
 import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
 import cn.ypbin.admin.system.model.resp.TrackTrendResp;
+import cn.ypbin.admin.system.service.TrackAnalysisService;
 import cn.ypbin.admin.system.service.TrackEventService;
 import cn.ypbin.starter.core.model.R;
 import cn.ypbin.starter.crud.model.PageResult;
@@ -50,6 +53,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class TrackEventController {
 
     private final TrackEventService trackEventService;
+
+    private final TrackAnalysisService trackAnalysisService;
 
     /**
      * 概览统计。
@@ -122,5 +127,31 @@ public class TrackEventController {
     @SaCheckPermission("system:track:list")
     public void export(@Valid TrackEventQuery query, HttpServletResponse response) {
         trackEventService.exportEvents(query, response);
+    }
+
+    /**
+     * 会话级漏斗分析。
+     *
+     * @param steps 逗号分隔的事件码（2..8 个）
+     * @param days  统计天数（1..90，默认 7）
+     * @return 每步的会话数与相对首步的转化率
+     */
+    @GetMapping("/funnel")
+    @SaCheckPermission("system:track:list")
+    public R<List<TrackFunnelStepResp>> funnel(@RequestParam String steps,
+                                               @RequestParam(defaultValue = "7") int days) {
+        return R.ok(trackAnalysisService.funnel(steps, days));
+    }
+
+    /**
+     * 用户留存矩阵与摘要。
+     *
+     * @param days 分析天数（1..90，默认 7）
+     * @return 完整矩阵（最长 7×7）+ D1/D7/D30 摘要；仅覆盖登录用户
+     */
+    @GetMapping("/retention")
+    @SaCheckPermission("system:track:list")
+    public R<TrackRetentionResp> retention(@RequestParam(defaultValue = "7") int days) {
+        return R.ok(trackAnalysisService.retention(days));
     }
 }

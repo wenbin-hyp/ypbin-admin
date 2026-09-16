@@ -33,6 +33,10 @@ ypbin:
       - sys_license
       # 埋点事件由采集链路的消费者线程写入，该线程没有租户上下文（fail-closed 下会直接抛错）
       - sys_track_event
+      # 埋点聚合表由 XXL-JOB 的聚合任务线程写入/读取，同样没有租户上下文
+      - sys_track_event_daily
+      - sys_track_user_daily
+      - sys_track_session
   # 身份头来源校验：仅信任带网关签名标记的身份头；未配置密钥则拒绝启动（fail-fast）
   cloud:
     feign:

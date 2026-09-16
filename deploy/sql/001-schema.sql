@@ -564,3 +564,63 @@ CREATE TABLE sys_track_event
     KEY idx_track_user_time (user_id, received_time),
     KEY idx_track_time (received_time)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点事件明细';
+
+
+-- ============================================================
+-- 埋点分析聚合表（阶段 3：漏斗与留存）
+-- 约定：三张表都由 XXL-JOB 聚合任务的线程写入，该线程没有租户上下文，
+--       因此都不继承 BaseEntity、也都不参与租户隔离（已登记在 ypbin.tenant.ignore-tables）
+-- 幂等：按「天」重算 —— 先 DELETE 该天再 INSERT（不做增量水位，窗口取最近 2 天覆盖延迟到达）
+-- ============================================================
+
+-- 事件按天 × 事件码 × 应用聚合
+-- 维度哨兵：app_id 为空时统一写 __NONE__（不用 NULL）——MySQL 唯一索引对 NULL 不去重，
+--           同一维度为空的多个分组会各自成行，删除/重算后必然出现重复行
+CREATE TABLE sys_track_event_daily
+(
+    stat_date       DATE         NOT NULL COMMENT '统计日期（按 received_time 的服务端时区分桶）',
+    event_code      VARCHAR(128) NOT NULL COMMENT '事件码：domain.object.action',
+    app_id          VARCHAR(64)  NOT NULL COMMENT '应用标识（空值写哨兵 __NONE__）',
+    event_count     BIGINT       NOT NULL DEFAULT 0 COMMENT '事件数',
+    fail_count      BIGINT       NOT NULL DEFAULT 0 COMMENT '失败事件数（success = 0）',
+    duration_sum_ms BIGINT       NOT NULL DEFAULT 0 COMMENT '耗时求和（毫秒）',
+    duration_cnt    BIGINT       NOT NULL DEFAULT 0 COMMENT '耗时非空的事件数（用于算平均值）',
+    create_time     DATETIME     NOT NULL COMMENT '聚合写入时间',
+    PRIMARY KEY (stat_date, event_code, app_id),
+    KEY idx_track_event_daily_code (event_code, stat_date)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点事件按天聚合';
+
+-- 用户按天聚合（匿名事件 user_id 为空，不写入本表）
+CREATE TABLE sys_track_user_daily
+(
+    stat_date   DATE        NOT NULL COMMENT '统计日期（按 received_time 的服务端时区分桶）',
+    user_id     BIGINT      NOT NULL COMMENT '用户 ID（user_id 为空的事件不写入本表）',
+    app_id      VARCHAR(64) NOT NULL COMMENT '应用标识（空值写哨兵 __NONE__）',
+    event_count BIGINT      NOT NULL DEFAULT 0 COMMENT '当日事件数',
+    first_time  DATETIME    NOT NULL COMMENT '当日最早事件时间',
+    last_time   DATETIME    NOT NULL COMMENT '当日最晚事件时间',
+    create_time DATETIME    NOT NULL COMMENT '聚合写入时间',
+    PRIMARY KEY (stat_date, user_id, app_id),
+    KEY idx_track_user_daily_user (user_id, stat_date)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点用户按天聚合（留存口径的事实源）';
+
+-- 会话（漏斗口径的唯一事实源）
+-- 主键是 session_id（客户端生成即天然去重），user_id/tenant_id/app_id 只是归属记录、不参与任何唯一键，
+-- 因此不需要哨兵值，空值按 NULL 原样保留。
+-- event_sequence 长度按最坏情况定：50 个事件码 × event_code 的 128 字符上限 + 49 个逗号 = 6449，向上取整
+CREATE TABLE sys_track_session
+(
+    session_id     VARCHAR(64)   NOT NULL COMMENT '会话 ID（客户端生成）',
+    user_id        BIGINT        NULL COMMENT '用户 ID（未登录为空）',
+    tenant_id      BIGINT        NULL COMMENT '租户 ID',
+    app_id         VARCHAR(64)   NULL COMMENT '应用标识',
+    start_time     DATETIME      NOT NULL COMMENT '会话内最早事件时间',
+    end_time       DATETIME      NOT NULL COMMENT '会话内最晚事件时间',
+    duration_ms    BIGINT        NOT NULL COMMENT '会话时长（毫秒）',
+    event_count    BIGINT        NOT NULL COMMENT '会话内事件数',
+    event_sequence VARCHAR(7000) NOT NULL COMMENT '有序事件码序列（最多 50 个，逗号分隔，超出截断）',
+    truncated      TINYINT       NOT NULL COMMENT '1 表示事件数超过上限被截断',
+    create_time    DATETIME      NOT NULL COMMENT '聚合写入时间',
+    PRIMARY KEY (session_id),
+    KEY idx_track_session_start (start_time)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点会话（漏斗分析用）';
