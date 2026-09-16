@@ -44,6 +44,19 @@ ypbin:
       require-trusted-source: true
   data-permission:
     enabled: true
+  # ---------- 操作日志（ypbin-starter-log）----------
+  # 落库实现见 cn.ypbin.admin.system.provider.DbLogProviders（LogDao → sys_log）。
+  # 采集项默认只有 REQUEST_PARAM/IP/CLIENT（starter Include.defaultIncludes），
+  # 不显式追加 BROWSER/OS 的话 sys_log 的 browser/os 两列恒为空。
+  # 刻意不追加 REQUEST_BODY/RESPONSE_BODY：避免大报文与敏感字段落库。
+  log:
+    enabled: true
+    includes:
+      - REQUEST_PARAM
+      - IP
+      - CLIENT
+      - BROWSER
+      - OS
   # ---------- 埋点（ypbin-starter-tracking）----------
   # 采集端点默认关闭，这里显式开启；端点路径 /tracking/ingest 经网关为 /system/tracking/ingest
   # （已登记到 ypbin-gateway.yaml 的 auth.exclude-paths，否则未登录事件会被网关拒绝）。

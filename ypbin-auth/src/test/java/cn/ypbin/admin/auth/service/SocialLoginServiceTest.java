@@ -91,7 +91,7 @@ class SocialLoginServiceTest {
         try (MockedStatic<SysCache> sysCache = mockStatic(SysCache.class)) {
             sysCache.when(() -> SysCache.getSocialBinding("github", "openid-123")).thenReturn(null);
 
-            assertThatThrownBy(() -> service.login("github", callbackReq()))
+            assertThatThrownBy(() -> service.login("github", callbackReq(), "10.0.0.8", null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("尚未绑定");
         }

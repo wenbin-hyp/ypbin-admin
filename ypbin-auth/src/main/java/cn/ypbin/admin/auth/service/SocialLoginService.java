@@ -24,6 +24,7 @@ import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import me.zhyd.oauth.model.AuthCallback;
 import me.zhyd.oauth.model.AuthUser;
+import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -47,8 +48,14 @@ public class SocialLoginService {
 
     /**
      * 用授权码完成第三方登录。已绑定的直接登录；未绑定的抛出提示引导先绑定。
+     *
+     * @param source    第三方平台标识
+     * @param req       回调请求
+     * @param clientIp  客户端 IP
+     * @param userAgent 客户端 User-Agent 原始串，可空
+     * @return 登录结果
      */
-    public LoginResp login(String source, SocialCallbackReq req) {
+    public LoginResp login(String source, SocialCallbackReq req, String clientIp, @Nullable String userAgent) {
         String normalizedSource = normalizeSource(source);
         // 回调前即时校验平台启用状态并同步最新配置（平台已停用直接拒绝，防止停用平台仍可登录）
         registryInitializer.ensurePlatformRegistered(normalizedSource);
@@ -59,7 +66,7 @@ public class SocialLoginService {
             throw new BusinessException("第三方账号尚未绑定，请先登录已有账号完成绑定");
         }
         SysUser user = fetchUser(binding.getUserId());
-        return loginSupport.completeLogin(user, "SOCIAL");
+        return loginSupport.completeLogin(user, "SOCIAL", clientIp, userAgent);
     }
 
     /**

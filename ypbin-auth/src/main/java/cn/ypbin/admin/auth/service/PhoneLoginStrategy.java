@@ -50,11 +50,12 @@ public class PhoneLoginStrategy {
     /**
      * 执行手机验证码登录。
      *
-     * @param req      登录请求
-     * @param clientIp 客户端 IP
+     * @param req       登录请求
+     * @param clientIp  客户端 IP
+     * @param userAgent 客户端 User-Agent 原始串，可空
      * @return 登录结果
      */
-    public LoginResp login(PhoneLoginReq req, String clientIp) {
+    public LoginResp login(PhoneLoginReq req, String clientIp, String userAgent) {
         // 开关检查
         if (!configReader.getBoolean(KEY_LOGIN_SMS_ENABLED, false)) {
             throw new BusinessException("短信验证码登录未开启");
@@ -79,6 +80,6 @@ public class PhoneLoginStrategy {
         }
         attemptLimiter.reset(phone, clientIp);
 
-        return loginSupport.completeLogin(user, authType());
+        return loginSupport.completeLogin(user, authType(), clientIp, userAgent);
     }
 }
