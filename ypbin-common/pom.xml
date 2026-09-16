@@ -35,5 +35,25 @@
             <artifactId>ypbin-starter-extension-tenant</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- 日志"跨服务上报"装配（RemoteLogAutoConfiguration）编译期依赖：
+             auth/ai/system 各自都直接声明了这两个模块，故这里必须 optional——否则 ypbin-common 会把
+             ypbin-system-api → ypbin-starter-data（MyBatis-Plus + 数据源自动配置）与 starter-log
+             强推给每一个 common 消费者，等于绕开"谁需要谁声明"，auth 也会凭空多出一套 MyBatis。 -->
+        <dependency>
+            <groupId>cn.ypbin.admin</groupId>
+            <artifactId>ypbin-system-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cn.ypbin</groupId>
+            <artifactId>ypbin-starter-log</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- 测试（RemoteLogDao / 自动装配优先级） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

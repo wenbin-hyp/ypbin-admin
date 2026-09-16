@@ -74,6 +74,12 @@
             <groupId>cn.ypbin</groupId>
             <artifactId>ypbin-starter-log</artifactId>
         </dependency>
+        <!-- 异步执行（@EnableAsync 自动装配 + 统一线程池）：starter 的 LogEventListener 标了 @Async，
+             不引入本模块时 @EnableAsync 不生效、@Async 被静默忽略，sys_log 的 insert 会跑在业务请求线程上 -->
+        <dependency>
+            <groupId>cn.ypbin</groupId>
+            <artifactId>ypbin-starter-async</artifactId>
+        </dependency>
         <dependency>
             <groupId>cn.ypbin</groupId>
             <artifactId>ypbin-starter-tracking</artifactId>
