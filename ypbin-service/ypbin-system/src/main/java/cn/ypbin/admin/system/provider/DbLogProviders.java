@@ -52,6 +52,10 @@ import org.springframework.stereotype.Component;
  *
  * @author wenbin
  * @since 2026-09-16
+ * <p><strong>与依赖版本相关的事实（务必知道）</strong>：本仓固定 {@code ypbin-starter-log:3.3.0}，
+ * 该版本的 {@code LogEventListener} 在落库失败时<strong>只打印 message、不带堆栈</strong>
+ * （starter 侧补堆栈的改动晚于 v3.3.0，需等发版才生效）。因此本类与上报侧
+ * （{@code RemoteLogDao}）<strong>自己</strong>负责抛错/记完整堆栈，不能依赖监听器。</p>
  */
 public final class DbLogProviders {
 
