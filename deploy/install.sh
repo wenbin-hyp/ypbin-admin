@@ -257,6 +257,29 @@ resolve_starter_build_ref() {
   return 0
 }
 
+# 安装前端依赖：放宽 pnpm 拉取超时并自动重试一次。
+# 现场教训：大包（@iconify/json ~95MB、@turbo/linux-64 ~19MB）在 pnpm 默认 60s 拉取超时下会中断，
+# 报 [23] The operation was aborted due to timeout；此时即使已复用 1600+ 个包，整个安装仍算失败。
+# 放宽 fetch-timeout / 重试次数并下调并发，比"推倒重来"更符合现场（失败一次即整体失败，重试代价低）。
+install_frontend_deps() {
+  local ui_dir="$ROOT/ypbin-admin-ui"
+  pnpm config set registry https://registry.npmmirror.com >/dev/null 2>&1 || true
+  pnpm config set fetch-timeout 600000 >/dev/null 2>&1 || true
+  pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
+  pnpm config set fetch-retry-maxtimeout 600000 >/dev/null 2>&1 || true
+  pnpm config set network-concurrency 8 >/dev/null 2>&1 || true
+  if (cd "$ui_dir" && pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1); then
+    return 0
+  fi
+  warn "前端依赖安装失败（最常见原因：大包拉取超时 [23]）。已放宽 pnpm 拉取超时与重试次数，重试一次……"
+  if (cd "$ui_dir" && pnpm install 2>&1); then
+    return 0
+  fi
+  warn "前端依赖安装仍失败。自查：df -h \"$ROOT\"（磁盘空间是否足够，前端依赖需数 GB）"
+  warn "手动重试：cd $ui_dir && pnpm config set fetch-timeout 600000 && pnpm install"
+  return 1
+}
+
 # MySQL 认证探测：把「密码与数据卷不一致」与「还没就绪」区分开。
 # 现场教训：MySQL 镜像仅在【空数据卷】时应用 MYSQL_ROOT_PASSWORD，卷已存在则忽略该环境变量；
 # 于是 .env 与卷里初始化的密码不一致 → healthcheck 永远不 healthy → 脚本等满 60 秒后继续往下走，
@@ -1009,9 +1032,7 @@ else
     export PATH="/usr/local/lib/nodejs/bin:$PATH"
     npm install -g pnpm@latest --registry=https://registry.npmmirror.com >/dev/null 2>&1 || true
   fi
-  pnpm config set registry https://registry.npmmirror.com >/dev/null 2>&1 || true
-  (cd "$ROOT/ypbin-admin-ui" && pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1) \
-    || die "前端依赖安装失败"
+  install_frontend_deps || die "前端依赖安装失败（详见上方提示）"
   (cd "$ROOT/ypbin-admin-ui" && pnpm -F @vben/web-antd build 2>&1) \
     || die "前端构建失败"
   mkdir -p "$ADMIN_UI_DIST_DIR"
