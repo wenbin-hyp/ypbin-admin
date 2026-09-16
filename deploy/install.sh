@@ -46,6 +46,9 @@
 #                                  auth/system/ai 共享一致值，一般无需手传）
 #   GATEWAY_SIGN_TOKEN=            网关身份头签名标记（防伪造，自动随机生成；gateway 签发、
 #                                  auth/system/ai 校验，一般无需手传）
+#   REBUILD_FRONTEND=1             强制重新构建前端。默认：产物比源码新则复用、否则自动重建
+#                                  （改了前端源码或 apps/web-antd/.env* 后重跑即可，无需先删 admin-ui-dist）；
+#                                  SKIP_FRONTEND=1 则永不构建（必须已有产物）
 #   REGISTRY_PREFIX=               Docker 镜像前缀（如加速源 docker.m.daocloud.io/；留空=自动探测：
 #                                  官方源可达时优先官方，否则用国内加速）。海外/香港服务器若不想等探活，
 #                                  可直接 export REGISTRY_PREFIX=docker.io/ 明确走官方源
@@ -351,6 +354,22 @@ install_frontend_deps() {
   return 1
 }
 
+# 判断已有前端产物是否仍然"新鲜"：产物存在，且没有任何比它更新的构建输入。
+# 现场教训：原先只看"index.html 存在就复用"，于是改了前端源码（例如埋点 SDK）或
+# .env.production 后重新部署时仍复用旧产物——等于静默部署了旧前端。
+# 现在按时间戳判断（构建输入 = 前端源码 + 应用级 .env*），并保留两个显式开关：
+# SKIP_FRONTEND=1 永不构建；REBUILD_FRONTEND=1 强制构建。
+frontend_dist_is_fresh() {
+  local dist_index="$ADMIN_UI_DIST_DIR/index.html"
+  [ -f "$dist_index" ] || return 1
+  local newer
+  newer="$(find "$ROOT/ypbin-admin-ui/apps/web-antd/src" \
+                "$ROOT/ypbin-admin-ui/packages" \
+                "$ROOT/ypbin-admin-ui/apps/web-antd"/.env* \
+                -type f -newer "$dist_index" -print -quit 2>/dev/null || true)"
+  [ -z "$newer" ]
+}
+
 # MySQL 认证探测：把「密码与数据卷不一致」与「还没就绪」区分开。
 # 现场教训：MySQL 镜像仅在【空数据卷】时应用 MYSQL_ROOT_PASSWORD，卷已存在则忽略该环境变量；
 # 于是 .env 与卷里初始化的密码不一致 → healthcheck 永远不 healthy → 脚本等满 60 秒后继续往下走，
@@ -437,6 +456,8 @@ ROOT_CLI=""
 NO_DOCKER="${NO_DOCKER:-0}"
 ASSUME_YES="${ASSUME_YES:-0}"
 SKIP_FRONTEND="${SKIP_FRONTEND:-0}"
+# 强制重新构建前端（默认按“产物是否比源码新”自动判断，见 frontend_dist_is_fresh）
+REBUILD_FRONTEND="${REBUILD_FRONTEND:-0}"
 ADMIN_UI_PORT="${ADMIN_UI_PORT:-19000}"
 # starter 版本：从 admin 仓库 pom 的 ypbin-starter.version 自动解析（唯一事实源，
 # 与 CI dispatch 自动升级保持一致），无需手工同步；目录未就绪时留空，由 [3/7] 构建前解析。
@@ -1080,16 +1101,26 @@ fi
 if [ "$NO_DOCKER" = "1" ]; then
   # NO_DOCKER 模式目前只部署后端，前端需另行部署；跳过构建避免误导
   info "[5.6/7] NO_DOCKER 模式跳过前端构建"
-elif [ "$SKIP_FRONTEND" = "1" ] || [ -f "$ADMIN_UI_DIST_DIR/index.html" ]; then
+elif [ "$SKIP_FRONTEND" = "1" ]; then
   if [ -f "$ADMIN_UI_DIST_DIR/index.html" ]; then
-    ok "使用已有前端产物 $ADMIN_UI_DIST_DIR"
+    ok "使用已有前端产物 $ADMIN_UI_DIST_DIR（SKIP_FRONTEND=1）"
   else
     warn "SKIP_FRONTEND=1 但 $ADMIN_UI_DIST_DIR 无 index.html"
     info "请本地构建后上传：cd ypbin-admin-ui && pnpm install && pnpm -F @vben/web-antd build"
     info "上传：scp -r apps/web-antd/dist/* root@<IP>:$ADMIN_UI_DIST_DIR/"
     die "缺少前端产物"
   fi
+elif [ "$REBUILD_FRONTEND" != "1" ] && frontend_dist_is_fresh; then
+  ok "复用已有前端产物（比源码新）：$ADMIN_UI_DIST_DIR"
+  info "如需强制重建：REBUILD_FRONTEND=1（改了前端源码或 apps/web-antd/.env* 时会自动重建）"
 else
+  if [ "$REBUILD_FRONTEND" = "1" ]; then
+    info "[5.6/7] 按 REBUILD_FRONTEND=1 强制重新构建前端"
+  elif [ ! -f "$ADMIN_UI_DIST_DIR/index.html" ]; then
+    info "[5.6/7] 尚无前端产物，开始构建"
+  else
+    info "[5.6/7] 前端源码比产物新（或构建输入有变化），重新构建以避免复用旧前端"
+  fi
   info "[5.6/7] 构建前端 admin-ui（约 2-10 分钟）"
   export PATH="/usr/local/lib/nodejs/bin:$PATH"
   if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
