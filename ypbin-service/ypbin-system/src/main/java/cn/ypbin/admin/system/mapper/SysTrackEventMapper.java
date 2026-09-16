@@ -10,6 +10,8 @@
 package cn.ypbin.admin.system.mapper;
 
 import cn.ypbin.admin.system.entity.SysTrackEvent;
+import cn.ypbin.admin.system.entity.SysTrackEventDaily;
+import cn.ypbin.admin.system.entity.SysTrackUserDaily;
 import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
 import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
@@ -134,4 +136,122 @@ public interface SysTrackEventMapper extends BaseMapper<SysTrackEvent> {
         ORDER BY `count` DESC
         """)
     List<TrackAppCountResp> selectAppDistribution(@Param("since") LocalDateTime since);
+
+    /**
+     * 按天聚合事件维度（事件聚合表的取数来源）。
+     *
+     * <p>{@code app_id} 用 {@code COALESCE(..., 哨兵)} 归一：聚合表的唯一键含 {@code app_id}，
+     * 而 MySQL 唯一索引对 NULL 不去重，维度为空必须落成非空哨兵（见 {@code TrackDimensions}）。
+     * {@code GROUP BY} 里的 {@code app_id} 是原始列，{@code COALESCE} 只是取值——
+     * 同一组的 {@code app_id} 同值（含同为 NULL），归一结果唯一。</p>
+     *
+     * <p>{@code duration_cnt} 用 {@code COUNT(duration_ms)}：MySQL 的 {@code COUNT(列)} 不计 NULL，
+     * 正是「有耗时的事件数」，与 {@code duration_sum_ms} 同源，可安全算平均。</p>
+     *
+     * <p>{@code GROUP BY} 带上 {@code DATE(received_time)} 是为了满足 {@code ONLY_FULL_GROUP_BY}
+     * （MySQL 8 默认开启）；窗口本身就是一天，因此只会产出一组该日期。</p>
+     *
+     * <p>⚠️ 本 SQL <strong>无法在无数据库的 CI 中验证</strong>，部署后须用报告里给出的对照 SQL 核对。</p>
+     *
+     * @param start     起始时间（含）
+     * @param end       结束时间（不含）
+     * @param noneAppId 应用标识为空的哨兵值
+     * @return 按 (日期, 事件码, 应用) 的聚合行
+     */
+    @Select("""
+        SELECT DATE(received_time) AS stat_date,
+               event_code,
+               COALESCE(app_id, #{noneAppId}) AS app_id,
+               COUNT(*) AS event_count,
+               COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS fail_count,
+               COALESCE(SUM(duration_ms), 0) AS duration_sum_ms,
+               COUNT(duration_ms) AS duration_cnt
+        FROM sys_track_event
+        WHERE received_time >= #{start}
+          AND received_time < #{end}
+        GROUP BY DATE(received_time), event_code, app_id
+        """)
+    List<SysTrackEventDaily> selectEventDailyAggregate(@Param("start") LocalDateTime start,
+                                                       @Param("end") LocalDateTime end,
+                                                       @Param("noneAppId") String noneAppId);
+
+    /**
+     * 按天聚合用户维度（用户聚合表的取数来源）。
+     *
+     * <p>{@code user_id IS NOT NULL} 是硬条件：<strong>匿名事件不进用户聚合表</strong>，
+     * 没有用户标识就无法判定「同一用户是否回来」。</p>
+     *
+     * <p>⚠️ 本 SQL <strong>无法在无数据库的 CI 中验证</strong>，部署后须用报告里给出的对照 SQL 核对。</p>
+     *
+     * @param start     起始时间（含）
+     * @param end       结束时间（不含）
+     * @param noneAppId 应用标识为空的哨兵值
+     * @return 按 (日期, 用户, 应用) 的聚合行
+     */
+    @Select("""
+        SELECT DATE(received_time) AS stat_date,
+               user_id,
+               COALESCE(app_id, #{noneAppId}) AS app_id,
+               COUNT(*) AS event_count,
+               MIN(received_time) AS first_time,
+               MAX(received_time) AS last_time
+        FROM sys_track_event
+        WHERE received_time >= #{start}
+          AND received_time < #{end}
+          AND user_id IS NOT NULL
+        GROUP BY DATE(received_time), user_id, app_id
+        """)
+    List<SysTrackUserDaily> selectUserDailyAggregate(@Param("start") LocalDateTime start,
+                                                     @Param("end") LocalDateTime end,
+                                                     @Param("noneAppId") String noneAppId);
+
+    /**
+     * 取窗口内有事件的会话 ID（会话重算的入口）。
+     *
+     * <p>调用方传入 {@code 上限 + 1} 作为 {@code limit}：拿到「多一条」即说明超出上限，
+     * 由调用方显式报错——不做静默截断，截断会让聚合结果悄悄少算一部分会话。</p>
+     *
+     * @param start 起始时间（含）
+     * @param end   结束时间（不含）
+     * @param limit 返回行数上限
+     * @return 会话 ID（升序）
+     */
+    @Select("""
+        SELECT DISTINCT session_id
+        FROM sys_track_event
+        WHERE received_time >= #{start}
+          AND received_time < #{end}
+          AND session_id IS NOT NULL
+        ORDER BY session_id
+        LIMIT #{limit}
+        """)
+    List<String> selectSessionIds(@Param("start") LocalDateTime start,
+                                  @Param("end") LocalDateTime end,
+                                  @Param("limit") long limit);
+
+    /**
+     * 取指定会话的<strong>全部</strong>明细事件（不设时间上界）。
+     *
+     * <p>不设时间上界是刻意的：跨天会话必须整段参与装配，否则会被算成两个半天，
+     * 漏斗里「本会话是否按序完成」的判定就会失真。</p>
+     *
+     * <p>只取装配需要的列，不回 {@code payload} 大字段。</p>
+     *
+     * <p>调用方<strong>必须</strong>先判空短路：空集合会让 {@code IN ()} 变成语法错误。</p>
+     *
+     * @param sessionIds 会话 ID（非空）
+     * @return 明细事件（按会话、接收时间、主键升序）
+     */
+    @Select("""
+        <script>
+        SELECT id, session_id, event_code, user_id, tenant_id, app_id, received_time
+        FROM sys_track_event
+        WHERE session_id IN
+        <foreach collection="sessionIds" item="sessionId" open="(" separator="," close=")">
+            #{sessionId}
+        </foreach>
+        ORDER BY session_id, received_time, id
+        </script>
+        """)
+    List<SysTrackEvent> selectEventsBySessionIds(@Param("sessionIds") List<String> sessionIds);
 }

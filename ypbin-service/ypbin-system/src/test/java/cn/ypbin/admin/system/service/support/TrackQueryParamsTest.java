@@ -9,6 +9,7 @@
  */
 package cn.ypbin.admin.system.service.support;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -50,5 +51,32 @@ class TrackQueryParamsTest {
             .isInstanceOf(BusinessException.class).hasMessageContaining("排行条数");
         assertThatThrownBy(() -> TrackQueryParams.requireLimit(51))
             .isInstanceOf(BusinessException.class).hasMessageContaining("排行条数");
+    }
+
+    @Test
+    void shouldParseFunnelStepsKeepingOrder() {
+        assertThat(TrackQueryParams.parseSteps("a,b")).containsExactly("a", "b");
+        assertThat(TrackQueryParams.parseSteps(" a , b , c ")).containsExactly("a", "b", "c");
+        assertThat(TrackQueryParams.parseSteps("a,a")).containsExactly("a", "a");
+    }
+
+    @Test
+    void shouldRejectOutOfRangeFunnelStepCount() {
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps("a"))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("步骤数");
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps("a,b,c,d,e,f,g,h,i"))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("步骤数");
+    }
+
+    @Test
+    void shouldRejectBlankFunnelSteps() {
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps(null))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("不能为空");
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps("  "))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("不能为空");
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps("a,,b"))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("空事件码");
+        assertThatThrownBy(() -> TrackQueryParams.parseSteps("a,b,"))
+            .isInstanceOf(BusinessException.class).hasMessageContaining("空事件码");
     }
 }
