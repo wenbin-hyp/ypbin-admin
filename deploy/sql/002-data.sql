@@ -169,7 +169,7 @@ VALUES (3001, 0, 'OrgManage', 'catalog', 0, '/system/org', 'BasicLayout', 'syste
        (3003, 0, 'SysManage', 'catalog', 1, '/system/sys', 'BasicLayout', 'system.sys.title', 'carbon:settings-adjust', 8, NOW(), 1, 0),
        (3008, 0, 'LicenseManage', 'catalog', 1, '/system/license-manage', 'BasicLayout', 'system.license.title', 'carbon:license', 9, NOW(), 1, 0);
 INSERT INTO sys_menu (id, pid, name, type, platform_only, path, component, title, icon, sort, create_time, status, is_deleted)
-VALUES (3009, 0, 'TrackingManage', 'catalog', 1, '/tracking', 'BasicLayout', 'tracking.title', 'carbon:chart-line-data', 10, NOW(), 1, 0);
+VALUES (3009, 3004, 'TrackingManage', 'catalog', 1, '/tracking', 'BasicLayout', 'tracking.title', 'carbon:chart-line-data', 9, NOW(), 1, 0);
 
 -- 接口文档（内嵌 iframe 打开后端 springdoc 的 swagger-ui）
 INSERT INTO sys_menu (id, pid, name, type, platform_only, path, component, iframe_src, title, icon, sort, create_time, status, is_deleted)
@@ -262,10 +262,11 @@ VALUES (270, 3004, 'SystemLog', 'menu', 1, '/system/log', '/system/log/list', 's
 INSERT INTO sys_menu (id, pid, name, type, platform_only, path, component, auth_code, title, icon, sort, create_time, status, is_deleted)
 VALUES (280, 3004, 'SystemOnlineUser', 'menu', 1, '/system/online-user', '/system/online-user/list', 'system:online-user:list', 'system.onlineUser.title', 'carbon:user-online', 8, NOW(), 1, 0);
 
--- 埋点管理（3009，平台）：事件列表 / 事件目录
+-- 埋点管理（3009，挂在系统监控 3004 下）：分析 / 事件列表 / 事件目录
 INSERT INTO sys_menu (id, pid, name, type, platform_only, path, component, auth_code, title, icon, sort, create_time, status, is_deleted)
-VALUES (3010, 3009, 'TrackingEventList', 'menu', 1, '/tracking/events', '/tracking/events/list', 'system:track:list', 'tracking.events.title', 'carbon:document-table', 1, NOW(), 1, 0),
-       (3011, 3009, 'TrackingEventCatalog', 'menu', 1, '/tracking/catalog', '/tracking/catalog/list', 'system:track:list', 'tracking.catalog.title', 'carbon:data-table', 2, NOW(), 1, 0);
+VALUES (3010, 3009, 'TrackingEventList', 'menu', 1, '/tracking/events', '/tracking/events/list', 'system:track:list', 'tracking.events.title', 'carbon:document', 1, NOW(), 1, 0),
+       (3011, 3009, 'TrackingEventCatalog', 'menu', 1, '/tracking/catalog', '/tracking/catalog/list', 'system:track:list', 'tracking.catalog.title', 'carbon:catalog', 2, NOW(), 1, 0),
+       (3013, 3009, 'TrackingAnalysis', 'menu', 1, '/tracking/analysis', '/tracking/analysis/list', 'system:track:list', 'tracking.analysis.title', 'carbon:analytics', 3, NOW(), 1, 0);
 INSERT INTO sys_menu (id, pid, name, type, platform_only, auth_code, title, sort, create_time, status, is_deleted)
 VALUES (3012, 3009, 'TrackingEventExport', 'button', 1, 'system:track:export', 'tracking.event.export', 3, NOW(), 1, 0);
 INSERT INTO sys_menu (id, pid, name, type, platform_only, auth_code, title, sort, create_time, status, is_deleted)
