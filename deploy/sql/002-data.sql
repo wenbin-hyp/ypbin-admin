@@ -266,7 +266,9 @@ VALUES (280, 3004, 'SystemOnlineUser', 'menu', 1, '/system/online-user', '/syste
 INSERT INTO sys_menu (id, pid, name, type, platform_only, path, component, auth_code, title, icon, sort, create_time, status, is_deleted)
 VALUES (3010, 3009, 'TrackingEventList', 'menu', 1, '/tracking/events', '/tracking/events/list', 'system:track:list', 'tracking.events.title', 'carbon:document', 1, NOW(), 1, 0),
        (3011, 3009, 'TrackingEventCatalog', 'menu', 1, '/tracking/catalog', '/tracking/catalog/list', 'system:track:list', 'tracking.catalog.title', 'carbon:catalog', 2, NOW(), 1, 0),
-       (3013, 3009, 'TrackingAnalysis', 'menu', 1, '/tracking/analysis', '/tracking/analysis/list', 'system:track:list', 'tracking.analysis.title', 'carbon:analytics', 3, NOW(), 1, 0);
+       (3013, 3009, 'TrackingAnalysis', 'menu', 1, '/tracking/analysis', '/tracking/analysis/list', 'system:track:list', 'tracking.analysis.title', 'carbon:analytics', 3, NOW(), 1, 0),
+       (3014, 3009, 'TrackingFunnel', 'menu', 1, '/tracking/funnel', '/tracking/funnel/list', 'system:track:list', 'tracking.funnel.title', 'carbon:activity', 4, NOW(), 1, 0),
+       (3015, 3009, 'TrackingRetention', 'menu', 1, '/tracking/retention', '/tracking/retention/list', 'system:track:list', 'tracking.retention.title', 'carbon:chart-line-data', 5, NOW(), 1, 0);
 INSERT INTO sys_menu (id, pid, name, type, platform_only, auth_code, title, sort, create_time, status, is_deleted)
 VALUES (3012, 3009, 'TrackingEventExport', 'button', 1, 'system:track:export', 'tracking.event.export', 3, NOW(), 1, 0);
 INSERT INTO sys_menu (id, pid, name, type, platform_only, auth_code, title, sort, create_time, status, is_deleted)
