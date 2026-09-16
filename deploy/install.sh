@@ -257,6 +257,27 @@ resolve_starter_build_ref() {
   return 0
 }
 
+# MySQL 认证探测：把「密码与数据卷不一致」与「还没就绪」区分开。
+# 现场教训：MySQL 镜像仅在【空数据卷】时应用 MYSQL_ROOT_PASSWORD，卷已存在则忽略该环境变量；
+# 于是 .env 与卷里初始化的密码不一致 → healthcheck 永远不 healthy → 脚本等满 60 秒后继续往下走，
+# 最后在 CREATE DATABASE 处报 Access denied，报错点远离真因。
+ensure_mysql_auth() {
+  local err
+  if err="$(docker exec ypbin-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "SELECT 1;" 2>&1)"; then
+    return 0
+  fi
+  if printf '%s' "$err" | grep -q "Access denied"; then
+    warn "MySQL 认证失败（Access denied）：.env 的 MYSQL_ROOT_PASSWORD 与数据卷里已初始化的密码不一致"
+    warn "原因：MySQL 镜像只在【空数据卷】时应用 MYSQL_ROOT_PASSWORD，卷已存在就忽略它"
+    warn "自查：docker inspect ypbin-mysql --format '{{.State.Health.Status}}'   # 密码不匹配时它永远不 healthy"
+    warn "处置（全新部署、无业务数据）：docker compose -f $ROOT/ypbin-admin/deploy/docker-compose.yml down -v 后重跑"
+    warn "      down -v 会删除 ypbin-mysql-data / ypbin-redis-data / ypbin-nacos-data 三个卷；Nacos 配置会在重跑时重新导入"
+    die "MySQL 密码与数据卷不一致，已停止（避免继续以错误密码初始化库表）"
+  fi
+  warn "MySQL 尚不可用（非认证问题，继续尝试）：$(printf '%s' "$err" | head -1)"
+  return 0
+}
+
 # 判定「compose 启动失败」是否与镜像仓库无关。
 # 现场教训：Nacos 需要宿主机 8080，端口被占用时 compose 整体退出非零，脚本却报成
 # 「Docker Hub 与国内加速均不可达」，把排查方向带偏——所以要按日志分类，并给出真因与处置。
@@ -928,6 +949,7 @@ if [ "$NO_DOCKER" != "1" ]; then
   done
   DB_HOST=localhost
   DB_PORT=3306
+  ensure_mysql_auth
   TABLE_COUNT=$(docker exec ypbin-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='ypbin_admin';" 2>/dev/null || echo 0)
   if [ "${TABLE_COUNT:-0}" = "0" ]; then
     docker exec ypbin-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
