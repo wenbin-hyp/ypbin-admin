@@ -257,6 +257,28 @@ resolve_starter_build_ref() {
   return 0
 }
 
+# 判定「compose 启动失败」是否与镜像仓库无关。
+# 现场教训：Nacos 需要宿主机 8080，端口被占用时 compose 整体退出非零，脚本却报成
+# 「Docker Hub 与国内加速均不可达」，把排查方向带偏——所以要按日志分类，并给出真因与处置。
+infra_failure_reason() {
+  if grep -qE "port is already allocated|Bind for [^ ]+ failed" /tmp/infra-up.log 2>/dev/null; then
+    local port holder
+    port="$(sed -n 's/.*Bind for [^:]*:\([0-9][0-9]*\) failed.*/\1/p' /tmp/infra-up.log | head -1)"
+    holder="$(docker ps -a --format '{{.Names}}|{{.Ports}}' 2>/dev/null | grep -F ":${port}->" | head -1 || true)"
+    warn "真因不是镜像仓库：宿主机端口 ${port:-?} 已被占用（Nacos 控制台需要它）"
+    [ -n "$holder" ] && warn "占用者疑似容器：${holder}"
+    warn "自查：docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep ${port:-8080}；sudo ss -ltnp | grep :${port:-8080}"
+    warn "处置：若是本套残留容器 → docker rm -f <容器名>（或 docker compose -f deploy/docker-compose.yml down）后重跑"
+    return 10
+  fi
+  if grep -qE "pull access denied|manifest unknown|not found: manifest|i/o timeout|TLS handshake timeout|no such host|connection refused" /tmp/infra-up.log 2>/dev/null; then
+    warn "真因是镜像拉取失败（网络或仓库侧）"
+    return 11
+  fi
+  warn "compose 启动失败，原因见 /tmp/infra-up.log 尾部"
+  return 12
+}
+
 # 构建 starter 并装入本地 Maven 仓库（构建前先用 resolve_starter_build_ref 选好代码引用）。
 build_starter() {
   resolve_starter_build_ref "$ROOT/ypbin-starter"
@@ -786,6 +808,7 @@ else
   # 本地镜像缺失或官方/本地起失败 → 逐个尝试探测通过的国内加速
   if [ "$infra_ok" != "1" ]; then
     local reg prefix
+    local infra_reason=0
     for reg in $DOCKER_REGISTRY_CANDIDATES; do
       # OFFICIAL 是哨兵：空前缀即官方 Docker Hub（compose 里 ${REGISTRY_PREFIX:-} 为空）
       if [ "$reg" = "OFFICIAL" ]; then prefix=""; else prefix="$reg"; fi
@@ -800,6 +823,12 @@ else
         infra_ok=1
         break
       fi
+      infra_failure_reason || infra_reason=$?
+      if [ "$infra_reason" = "10" ]; then
+        # 端口占用与镜像仓库无关，继续换源只会浪费时间与刷屏
+        warn "该失败与镜像仓库无关，停止尝试其余源"
+        break
+      fi
       if [ -n "$prefix" ]; then
         warn "镜像加速 ${prefix%/} 拉取失败，尝试下一个..."
       else
@@ -809,11 +838,15 @@ else
   fi
   if [ "$infra_ok" != "1" ]; then
     tail -5 /tmp/infra-up.log 2>/dev/null || true
-    die "基础设施镜像拉取失败（官方源与国内加速均未成功）。两条可执行路径：
+    if [ "$infra_reason" = "10" ]; then
+      die "基础设施启动失败：宿主机端口被占用（与镜像仓库无关），处置见上方提示后重跑"
+    fi
+    die "基础设施启动失败（官方源与国内加速均未成功）。两条可执行路径：
      ① 指定 registry 前缀后重跑：export REGISTRY_PREFIX=docker.io/（用官方源）
         或 export REGISTRY_PREFIX=<你的加速前缀>/；脚本会只试该前缀
      ② 完全离线：在可联网机器 docker pull/save 三个镜像（mysql:8.4、nacos/nacos-server:v3.2.4、
-        redis:7-alpine），传上来 docker load，脚本检测到本地已有镜像会直接启动、不再拉取"
+        redis:7-alpine），传上来 docker load，脚本检测到本地已有镜像会直接启动、不再拉取
+     （完整日志 /tmp/infra-up.log）"
   fi
 fi
 
