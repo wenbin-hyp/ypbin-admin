@@ -12,7 +12,9 @@ package cn.ypbin.admin.system.controller;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.ypbin.admin.system.model.query.TrackEventQuery;
 import cn.ypbin.admin.system.model.resp.TrackEventResp;
+import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
+import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
 import cn.ypbin.admin.system.model.resp.TrackTrendResp;
 import cn.ypbin.admin.system.service.TrackEventService;
 import cn.ypbin.starter.core.model.R;
@@ -70,6 +72,32 @@ public class TrackEventController {
     @SaCheckPermission("system:track:list")
     public R<List<TrackTrendResp>> trend(@RequestParam(defaultValue = "7") int days) {
         return R.ok(trackEventService.eventTrend(days));
+    }
+
+    /**
+     * 事件码排行（分析页 Top 事件）。
+     *
+     * @param days  统计天数（1..90，默认 7）
+     * @param limit 返回条数（1..50，默认 10）
+     * @return 事件码与次数；中文描述由前端按事件目录映射
+     */
+    @GetMapping("/events/top")
+    @SaCheckPermission("system:track:list")
+    public R<List<TrackTopEventResp>> topEvents(@RequestParam(defaultValue = "7") int days,
+                                                @RequestParam(defaultValue = "10") int limit) {
+        return R.ok(trackEventService.topEvents(days, limit));
+    }
+
+    /**
+     * 应用维度分布。
+     *
+     * @param days 统计天数（1..90，默认 7）
+     * @return 应用与次数
+     */
+    @GetMapping("/apps/distribution")
+    @SaCheckPermission("system:track:list")
+    public R<List<TrackAppCountResp>> appDistribution(@RequestParam(defaultValue = "7") int days) {
+        return R.ok(trackEventService.appDistribution(days));
     }
 
     /**
