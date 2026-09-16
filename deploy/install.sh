@@ -46,7 +46,9 @@
 #                                  auth/system/ai 共享一致值，一般无需手传）
 #   GATEWAY_SIGN_TOKEN=            网关身份头签名标记（防伪造，自动随机生成；gateway 签发、
 #                                  auth/system/ai 校验，一般无需手传）
-#   REGISTRY_PREFIX=               Docker 镜像加速前缀（如 docker.m.daocloud.io/；留空=官方源）
+#   REGISTRY_PREFIX=               Docker 镜像前缀（如加速源 docker.m.daocloud.io/；留空=自动探测：
+#                                  官方源可达时优先官方，否则用国内加速）。海外/香港服务器若不想等探活，
+#                                  可直接 export REGISTRY_PREFIX=docker.io/ 明确走官方源
 #   NO_DOCKER=1                    无 Docker 模式：java -jar 直接启动
 # ============================================================
 
@@ -168,6 +170,40 @@ starter_revision_from_pom() {
   rev="$(sed -n 's|.*<revision>\([^<]*\)</revision>.*|\1|p' "$pom" | head -1)"
   [ -n "$rev" ] || return 1
   printf '%s' "$rev"
+}
+
+# 解析基础设施镜像的 registry 前缀候选顺序。
+# 背景：国内加速源是给「官方 Docker Hub 不可达」的环境用的；而海外/香港服务器恰恰相反——
+# 官方源可达、加速源往往全挂。原实现只在「本地已有镜像」的分支里用官方源，全新服务器上
+# 从不尝试官方源，于是在加速源全挂时必然卡死。
+# 结果写入全局 DOCKER_REGISTRY_CANDIDATES（空格分隔；OFFICIAL 为哨兵，表示官方源=空前缀）。
+resolve_registry_candidates() {
+  DOCKER_REGISTRY_CANDIDATES=""
+  local official_code d code
+  official_code=$(timeout 5 curl -sI -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null || true)
+  case "$official_code" in
+    200|301|302|401)
+      DOCKER_REGISTRY_CANDIDATES="OFFICIAL"
+      info "Docker Hub 官方源可达（HTTP ${official_code}），优先使用官方源"
+      ;;
+    *)
+      info "Docker Hub 官方源不可达（HTTP ${official_code:-不通}），改用国内镜像加速源"
+      ;;
+  esac
+  for d in $REGISTRY_CANDIDATE_DOMAINS; do
+    # registry v2 探活（5s 快超时）：200/301/302/401 均视为可达（401 为正常未认证响应，
+    # 不能用 curl -f——会把 401 误判失败跳过可达源）；其余状态/超时视为不通立即跳过
+    code=$(timeout 5 curl -sI -o /dev/null -w '%{http_code}' "https://$d/v2/" 2>/dev/null || true)
+    case "$code" in
+      200|301|302|401) DOCKER_REGISTRY_CANDIDATES="$DOCKER_REGISTRY_CANDIDATES ${d}/" ;;
+      *) warn "镜像加速 ${d} 探活失败(HTTP ${code:-不通})，跳过" ;;
+    esac
+  done
+  # 显式指定则只试该前缀；写 docker.io/ 即表示官方源（Docker 会规范化为 Hub 并补 library/ 前缀）
+  if [ -n "${REGISTRY_PREFIX:-}" ]; then
+    DOCKER_REGISTRY_CANDIDATES="${REGISTRY_PREFIX%/}/"
+    info "按 REGISTRY_PREFIX 指定 registry：${REGISTRY_PREFIX%/}/"
+  fi
 }
 
 # 选择构建 starter 用的代码引用：优先与 admin 依赖版本一致的 tag。
@@ -728,17 +764,7 @@ else
   # 官方 Docker Hub 在国内常不可达：REGISTRY_PREFIX 显式指定 → 只试该前缀；
   # 未指定时先试官方源，再对"连通性探测通过"的国内公共镜像加速逐个尝试（首个成功即用）。
   REGISTRY_CANDIDATE_DOMAINS="docker.m.daocloud.io docker.1ms.run docker.1panel.live docker.1panel.top hub.rat.dev dockerpull.org docker.xuanyuan.me dockerproxy.cn docker.rainbond.cc"
-  DOCKER_REGISTRY_CANDIDATES=""
-  for d in $REGISTRY_CANDIDATE_DOMAINS; do
-    # registry v2 探活（5s 快超时）：200/301/302/401 均视为可达（401 为正常未认证响应，
-    # 不能用 curl -f——会把 401 误判失败跳过可达源）；其余状态/超时视为不通立即跳过
-    code=$(timeout 5 curl -sI -o /dev/null -w '%{http_code}' "https://$d/v2/" 2>/dev/null || true)  # 探活失败不中断(set -e)
-    case "$code" in
-      200|301|302|401) DOCKER_REGISTRY_CANDIDATES="$DOCKER_REGISTRY_CANDIDATES ${d}/" ;;
-      *) warn "镜像加速 ${d} 探活失败(HTTP ${code:-不通})，跳过" ;;
-    esac
-  done
-  [ -n "${REGISTRY_PREFIX:-}" ] && DOCKER_REGISTRY_CANDIDATES="${REGISTRY_PREFIX%/}/"
+  resolve_registry_candidates
   infra_up() { # $1=REGISTRY_PREFIX(含尾/或空=官方)
     if [ -z "$1" ]; then
       REGISTRY_PREFIX= docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d nacos redis mysql
@@ -759,22 +785,35 @@ else
   fi
   # 本地镜像缺失或官方/本地起失败 → 逐个尝试探测通过的国内加速
   if [ "$infra_ok" != "1" ]; then
+    local reg prefix
     for reg in $DOCKER_REGISTRY_CANDIDATES; do
-      if infra_up "$reg" >/tmp/infra-up.log 2>&1; then
-        if [ -n "$reg" ]; then
-          ok "基础设施镜像经镜像加速拉取成功：${reg%/}"
-          echo "REGISTRY_PREFIX=$reg" >> "$ENV_FILE"
-          warn "已将 REGISTRY_PREFIX=$reg 写入 .env（后续 compose up 复用）"
+      # OFFICIAL 是哨兵：空前缀即官方 Docker Hub（compose 里 ${REGISTRY_PREFIX:-} 为空）
+      if [ "$reg" = "OFFICIAL" ]; then prefix=""; else prefix="$reg"; fi
+      if infra_up "$prefix" >/tmp/infra-up.log 2>&1; then
+        if [ -n "$prefix" ]; then
+          ok "基础设施镜像经镜像加速拉取成功：${prefix%/}"
+          echo "REGISTRY_PREFIX=$prefix" >> "$ENV_FILE"
+          warn "已将 REGISTRY_PREFIX=$prefix 写入 .env（后续 compose up 复用）"
+        else
+          ok "基础设施镜像已从 Docker Hub 官方源拉取成功"
         fi
         infra_ok=1
         break
       fi
-      [ -n "$reg" ] && warn "镜像加速 ${reg%/} 拉取失败，尝试下一个..."
+      if [ -n "$prefix" ]; then
+        warn "镜像加速 ${prefix%/} 拉取失败，尝试下一个..."
+      else
+        warn "Docker Hub 官方源拉取失败，尝试下一个..."
+      fi
     done
   fi
   if [ "$infra_ok" != "1" ]; then
     tail -5 /tmp/infra-up.log 2>/dev/null || true
-    die "基础设施镜像拉取失败（Docker Hub 与国内加速均不可达）：请手动 export REGISTRY_PREFIX=<可用加速前缀> 后重跑"
+    die "基础设施镜像拉取失败（官方源与国内加速均未成功）。两条可执行路径：
+     ① 指定 registry 前缀后重跑：export REGISTRY_PREFIX=docker.io/（用官方源）
+        或 export REGISTRY_PREFIX=<你的加速前缀>/；脚本会只试该前缀
+     ② 完全离线：在可联网机器 docker pull/save 三个镜像（mysql:8.4、nacos/nacos-server:v3.2.4、
+        redis:7-alpine），传上来 docker load，脚本检测到本地已有镜像会直接启动、不再拉取"
   fi
 fi
 
