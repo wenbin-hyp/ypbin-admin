@@ -59,8 +59,13 @@ public class AuthService {
 
     /**
      * 账号密码登录。
+     *
+     * @param req       登录请求
+     * @param ip        客户端 IP
+     * @param userAgent 客户端 User-Agent 原始串，可空
+     * @return 登录结果
      */
-    public LoginResp login(LoginReq req, String ip) {
+    public LoginResp login(LoginReq req, String ip, String userAgent) {
         // 开关开启时强制行为验证码（一次性消费，校验失败即拒绝），防脚本爆破
         if (configReader.getBoolean(KEY_LOGIN_CAPTCHA_ENABLED, false)) {
             requireCaptchaPassed(req);
@@ -85,7 +90,7 @@ public class AuthService {
             throw new BusinessException("账号已被禁用");
         }
         attemptLimiter.reset(req.getUsername(), ip);
-        return loginSupport.completeLogin(user, "ACCOUNT");
+        return loginSupport.completeLogin(user, "ACCOUNT", ip, userAgent);
     }
 
     /**
