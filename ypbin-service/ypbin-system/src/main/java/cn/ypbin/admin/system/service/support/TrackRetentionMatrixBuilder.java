@@ -33,13 +33,21 @@ import java.util.Map;
  * <h3>窗口口径（本类唯一的事实源）</h3>
  * <ul>
  *   <li>{@code maxOffset = min(days, 30)}：可用偏移日上限，决定摘要能出到 D1/D7/D30 中的哪几列；</li>
- *   <li><strong>摘要窗口</strong>：截至 {@code today - maxOffset} 的最近 {@code days} 天，
- *       因此窗口内每个首次出现日的目标偏移日都<strong>必然已经过完</strong>，不会出现半截数据；</li>
+ *   <li><strong>摘要窗口</strong>：截至 {@code today - maxOffset - 1} 的最近 {@code days} 天，
+ *       因此窗口内每个首次出现日 + {@code maxOffset} 的目标日<strong>最晚是昨天（已过完）</strong>，
+ *       不会出现半截数据；</li>
  *   <li><strong>矩阵窗口</strong>：固定 {@code matrixDays = min(days, 7)} 行，
  *       取截至 {@code today - matrixDays} 的最近 {@code matrixDays} 天——
  *       即矩阵是完整的 {@code matrixDays × matrixDays} 网格，没有「尚未到第 N 日」的空单元，
  *       代价是需要回溯 {@code 2 * matrixDays - 1} 天（days≥7 时为 13 天）的历史数据。</li>
  * </ul>
+ *
+ * <p><strong>为什么是 {@code today - maxOffset - 1} 而不是 {@code today - maxOffset}</strong>：
+ * 摘要把整个窗口的同一偏移日<strong>求和</strong>成一列。若取到 {@code today - maxOffset}，
+ * 最新那个首次出现日的目标日恰好是<strong>今天</strong>——今天还没过完，该 cohort 的第 N 日
+ * 留存人数必然偏少，这一列会被系统性地<strong>低估</strong>（且看不出任何异常）。
+ * 减 1 保证窗口内每个 cohort 的目标日都已完整结束；矩阵侧同理，
+ * 其最大目标日是 {@code today - 1}，两侧口径一致。</p>
  *
  * @author wenbin
  * @since 2026-09-16
@@ -70,7 +78,9 @@ public final class TrackRetentionMatrixBuilder {
      * 计算聚合查询需要的起始首次出现日（含）。
      *
      * <p>SQL 按「首次出现日 ∈ [起始日, 今天]」与「偏移日 ≤ {@link #maxOffset}」取数，
-     * 这一个区间同时覆盖摘要窗口与矩阵窗口。</p>
+     * 这一个区间要同时覆盖摘要窗口与矩阵窗口，故取下式（取两者中更早的那个；已证明恒成立）：
+     * 摘要窗口起点 {@code today - (maxOffset + 1) - (days - 1)}，
+     * 矩阵窗口起点 {@code today - 2 * matrixDays + 1}。</p>
      *
      * @param days  分析天数（正数）
      * @param today 今天
@@ -78,7 +88,7 @@ public final class TrackRetentionMatrixBuilder {
      */
     public static LocalDate earliestCohortDate(int days, LocalDate today) {
         requirePositiveDays(days);
-        return today.minusDays(maxOffset(days) + days - 1L);
+        return today.minusDays((long) maxOffset(days) + days);
     }
 
     /**
@@ -172,10 +182,23 @@ public final class TrackRetentionMatrixBuilder {
         return row;
     }
 
+    /**
+     * 组装摘要列（每个偏移日跨 cohort 求和）。
+     *
+     * <p>窗口末端取 {@code today - maxOffset - 1}：保证窗口内每个 cohort 的目标日
+     * （{@code cohortDate + maxOffset}）最晚是<strong>昨天</strong>，即已完整结束。
+     * 若取 {@code today - maxOffset}，最新 cohort 的目标日是今天（半截日），
+     * 其留存人数偏少会把整列拉低——这是「看起来正常但系统性偏低」的错误，必须避免。</p>
+     *
+     * @param days   分析天数
+     * @param today  今天
+     * @param counts 聚合点索引
+     * @return 摘要列（D1/D7/D30 中可用者，升序）
+     */
     private static List<TrackRetentionSummaryResp> toSummary(int days, LocalDate today,
                                                             Map<String, Long> counts) {
         int maxOffset = maxOffset(days);
-        LocalDate windowEnd = today.minusDays(maxOffset);
+        LocalDate windowEnd = today.minusDays(maxOffset + 1L);
         List<TrackRetentionSummaryResp> summary = new ArrayList<>();
         for (Integer dayOffset : summaryOffsets(days)) {
             long cohortSize = 0L;

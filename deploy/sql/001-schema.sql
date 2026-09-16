@@ -562,7 +562,12 @@ CREATE TABLE sys_track_event
     UNIQUE KEY uk_track_event_id (event_id),
     KEY idx_track_code_time (event_code, received_time),
     KEY idx_track_user_time (user_id, received_time),
-    KEY idx_track_time (received_time)
+    KEY idx_track_time (received_time),
+    -- 会话级聚合（阶段 3）：先 SELECT DISTINCT session_id 按 received_time 圈出窗口内的会话，
+    -- 再按 session_id IN (...) 取回这些会话的全部明细。两条 SQL 都只打这个索引：
+    -- 前者可用 (session_id, received_time) 覆盖扫描并天然有序（省掉 DISTINCT 的临时表/文件排序），
+    -- 后者是等值前缀匹配。没有它则每次聚合都全表扫明细表（本库最大的表），按小时跑一次不可接受。
+    KEY idx_track_session (session_id, received_time)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点事件明细';
 
 

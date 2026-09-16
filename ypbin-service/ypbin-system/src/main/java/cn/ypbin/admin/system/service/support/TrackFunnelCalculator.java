@@ -93,6 +93,24 @@ public final class TrackFunnelCalculator {
         return result;
     }
 
+    /**
+     * 统计被截断的会话数。
+     *
+     * <p>截断的会话可能丢失了后续步骤，会被当成「没走到该步」——所以各步会话数只是下限。
+     * 把数量暴露给调用方，客户端才能显示「至少」提示（口径见方案第五节第 5 条）。</p>
+     *
+     * @param truncatedFlags 各会话的截断标记（{@code 1} 表示已截断；{@code null} 视为未截断）
+     * @return 被截断的会话数
+     */
+    public static long countTruncatedSessions(List<Integer> truncatedFlags) {
+        if (truncatedFlags == null) {
+            return 0L;
+        }
+        return truncatedFlags.stream()
+            .filter(flag -> flag != null && flag == TrackSessionAssembler.TRUNCATED_FLAG)
+            .count();
+    }
+
     private static BigDecimal toRate(long count, long total) {
         if (total <= 0) {
             return null;

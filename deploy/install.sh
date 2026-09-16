@@ -1185,6 +1185,10 @@ if [ "$NO_DOCKER" = "1" ]; then
   info "[6/7] 无 Docker 模式：java -jar 启动 5 服务（需外部 Nacos/Redis/MySQL）"
   [ -n "${NACOS_ADDR:-}" ] || die "NO_DOCKER 模式需设置 NACOS_ADDR"
   mkdir -p "$ROOT/logs"
+  # 时区必须显式传给 JVM：Docker 模式靠镜像 ENV TZ=Asia/Shanghai 生效，java -jar 直启没有这层保障，
+  # 若宿主机是 UTC（云主机常见），LocalDate.now() 会按 UTC 取日，埋点「按 GMT+8 分桶」的口径即失效
+  # （跨天边界会错）。默认与被覆盖的应用配置一致，仍允许外部 TZ 覆盖。
+  APP_TZ="${TZ:-Asia/Shanghai}"
   while IFS=: read -r dir jar port; do
     if [ "$dir" = "ypbin-gateway" ]; then
       EXTRA="--spring.cloud.nacos.server-addr=$NACOS_ADDR"
@@ -1197,9 +1201,9 @@ if [ "$NO_DOCKER" = "1" ]; then
              --spring.data.redis.port=${REDIS_PORT:-6379}"
     fi
     # shellcheck disable=SC2086
-    nohup java -Xms256m -Xmx512m -jar "$JAR_DIR/$jar.jar" $EXTRA \
+    TZ="$APP_TZ" nohup java -Xms256m -Xmx512m -jar "$JAR_DIR/$jar.jar" $EXTRA \
       > "$ROOT/logs/$jar.log" 2>&1 &
-    ok "已启动 $jar（端口 $port，日志 $ROOT/logs/$jar.log）"
+    ok "已启动 $jar（端口 $port，时区 $APP_TZ，日志 $ROOT/logs/$jar.log）"
   done <<< "$SERVICES"
 else
   info "[6/7] Docker 模式：compose 启动（含 Nacos/Redis/MySQL 基础设施）"

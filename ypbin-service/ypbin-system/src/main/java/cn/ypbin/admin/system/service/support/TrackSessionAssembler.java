@@ -38,8 +38,8 @@ import java.util.Map;
  */
 public final class TrackSessionAssembler {
 
-    /** 截断标记：已截断 */
-    private static final int TRUNCATED_FLAG = 1;
+    /** 截断标记：已截断（漏斗侧读取该标记用于提示「数字是下限」，故对外可见） */
+    public static final int TRUNCATED_FLAG = 1;
 
     /** 截断标记：未截断 */
     private static final int NOT_TRUNCATED_FLAG = 0;

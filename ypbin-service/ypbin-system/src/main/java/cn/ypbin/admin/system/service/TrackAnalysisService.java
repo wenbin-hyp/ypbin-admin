@@ -9,9 +9,8 @@
  */
 package cn.ypbin.admin.system.service;
 
-import cn.ypbin.admin.system.model.resp.TrackFunnelStepResp;
+import cn.ypbin.admin.system.model.resp.TrackFunnelResp;
 import cn.ypbin.admin.system.model.resp.TrackRetentionResp;
-import java.util.List;
 
 /**
  * 埋点分析服务（漏斗与留存，只读）。
@@ -32,9 +31,9 @@ public interface TrackAnalysisService {
      *
      * @param steps 逗号分隔的事件码（2..8 个）
      * @param days  统计天数（1..90）
-     * @return 每步的会话数与相对首步的转化率
+     * @return 每步的会话数与相对首步的转化率，外加「被截断的会话数」（大于 0 时各步数字只是下限）
      */
-    List<TrackFunnelStepResp> funnel(String steps, int days);
+    TrackFunnelResp funnel(String steps, int days);
 
     /**
      * 用户留存矩阵与摘要。

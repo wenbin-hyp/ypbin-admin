@@ -13,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.ypbin.admin.system.model.resp.TrackFunnelStepResp;
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -84,5 +85,16 @@ class TrackFunnelCalculatorTest {
         assertThat(steps).allSatisfy(step -> assertThat(step.getSessionCount()).isZero());
         // 分母不存在时返回 null 表示「不可计算」，不伪造成 0%
         assertThat(steps).allSatisfy(step -> assertThat(step.getConversionRate()).isNull());
+    }
+
+    @Test
+    void shouldCountTruncatedSessions() {
+        // 漏斗数字只是下限：被截断的会话可能丢了后续步骤，必须把数量暴露出去
+        assertThat(TrackFunnelCalculator.countTruncatedSessions(List.of(1, 0, 1))).isEqualTo(2L);
+        assertThat(TrackFunnelCalculator.countTruncatedSessions(List.of(0, 0))).isZero();
+        assertThat(TrackFunnelCalculator.countTruncatedSessions(List.of())).isZero();
+        // 标记列可空时不得抛 NPE，且不把 null 当成已截断
+        assertThat(TrackFunnelCalculator.countTruncatedSessions(Arrays.asList(1, null))).isEqualTo(1L);
+        assertThat(TrackFunnelCalculator.countTruncatedSessions(null)).isZero();
     }
 }
