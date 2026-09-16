@@ -95,7 +95,7 @@ public interface SysTrackSessionMapper extends BaseMapper<SysTrackSession> {
         LIMIT #{limit}
         """)
     List<SysTrackSession> selectSequencesByFirstStep(@Param("startTime") LocalDateTime startTime,
-                                                      @Param("endTime") java.time.LocalDateTime endTime,
+                                                      @Param("endTime") LocalDateTime endTime,
                                                       @Param("firstStep") String firstStep,
                                                       @Param("limit") long limit);
 }

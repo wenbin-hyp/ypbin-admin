@@ -12,7 +12,7 @@ package cn.ypbin.admin.system.service.impl;
 import cn.ypbin.admin.system.entity.SysTrackSession;
 import cn.ypbin.admin.system.mapper.SysTrackSessionMapper;
 import cn.ypbin.admin.system.mapper.SysTrackUserDailyMapper;
-import cn.ypbin.admin.system.model.resp.TrackFunnelStepResp;
+import cn.ypbin.admin.system.model.resp.TrackFunnelResp;
 import cn.ypbin.admin.system.model.resp.TrackRetentionPointResp;
 import cn.ypbin.admin.system.model.resp.TrackRetentionResp;
 import cn.ypbin.admin.system.service.TrackAnalysisService;
@@ -57,7 +57,7 @@ public class TrackAnalysisServiceImpl implements TrackAnalysisService {
     private final SysTrackUserDailyMapper trackUserDailyMapper;
 
     @Override
-    public List<TrackFunnelStepResp> funnel(String steps, int days) {
+    public TrackFunnelResp funnel(String steps, int days) {
         TrackQueryParams.requireDays(days);
         List<String> stepCodes = TrackQueryParams.parseSteps(steps);
         LocalDate today = LocalDate.now();
@@ -72,7 +72,12 @@ public class TrackAnalysisServiceImpl implements TrackAnalysisService {
         List<List<String>> sequences = sessions.stream()
             .map(session -> TrackEventSequenceBuilder.parse(session.getEventSequence()))
             .toList();
-        return TrackFunnelCalculator.calculate(stepCodes, sequences);
+        TrackFunnelResp resp = new TrackFunnelResp();
+        resp.setSteps(TrackFunnelCalculator.calculate(stepCodes, sequences));
+        // 截断的会话可能丢了后续步骤、被当成「没走到该步」：各步会话数只是下限，必须一并暴露这个前提
+        resp.setTruncatedSessionCount(TrackFunnelCalculator.countTruncatedSessions(
+            sessions.stream().map(SysTrackSession::getTruncated).toList()));
+        return resp;
     }
 
     @Override

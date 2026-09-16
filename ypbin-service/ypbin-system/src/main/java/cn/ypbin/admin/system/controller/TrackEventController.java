@@ -13,7 +13,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.ypbin.admin.system.model.query.TrackEventQuery;
 import cn.ypbin.admin.system.model.resp.TrackEventResp;
 import cn.ypbin.admin.system.model.resp.TrackAppCountResp;
-import cn.ypbin.admin.system.model.resp.TrackFunnelStepResp;
+import cn.ypbin.admin.system.model.resp.TrackFunnelResp;
 import cn.ypbin.admin.system.model.resp.TrackOverviewResp;
 import cn.ypbin.admin.system.model.resp.TrackRetentionResp;
 import cn.ypbin.admin.system.model.resp.TrackTopEventResp;
@@ -134,12 +134,12 @@ public class TrackEventController {
      *
      * @param steps 逗号分隔的事件码（2..8 个）
      * @param days  统计天数（1..90，默认 7）
-     * @return 每步的会话数与相对首步的转化率
+     * @return 每步的会话数与相对首步的转化率，以及「被截断的会话数」（大于 0 时各步数字只是下限）
      */
     @GetMapping("/funnel")
     @SaCheckPermission("system:track:list")
-    public R<List<TrackFunnelStepResp>> funnel(@RequestParam String steps,
-                                               @RequestParam(defaultValue = "7") int days) {
+    public R<TrackFunnelResp> funnel(@RequestParam String steps,
+                                     @RequestParam(defaultValue = "7") int days) {
         return R.ok(trackAnalysisService.funnel(steps, days));
     }
 

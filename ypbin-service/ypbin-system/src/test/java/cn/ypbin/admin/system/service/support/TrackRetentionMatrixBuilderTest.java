@@ -72,16 +72,49 @@ class TrackRetentionMatrixBuilderTest {
         assertThat(resp.getSummary()).hasSize(2);
         TrackRetentionSummaryResp d1 = resp.getSummary().get(0);
         assertThat(d1.getDayOffset()).isEqualTo(1);
-        // 摘要窗口是截至 today-7 的最近 7 天（09-03..09-09），基数按行加权而不是把各行留存率取平均
-        assertThat(d1.getCohortSize()).isEqualTo(150L);
+        // 摘要窗口是截至 today-7-1=09-08 的最近 7 天（09-02..09-08），基数按行加权而不是把各行留存率取平均
+        assertThat(d1.getCohortSize()).isEqualTo(100L);
         assertThat(d1.getUserCount()).isEqualTo(40L);
-        assertThat(d1.getRetentionRate()).isEqualByComparingTo(new BigDecimal("0.266667"));
+        assertThat(d1.getRetentionRate()).isEqualByComparingTo(new BigDecimal("0.4"));
 
         TrackRetentionSummaryResp d7 = resp.getSummary().get(1);
         assertThat(d7.getDayOffset()).isEqualTo(7);
-        assertThat(d7.getCohortSize()).isEqualTo(150L);
+        assertThat(d7.getCohortSize()).isEqualTo(100L);
         assertThat(d7.getUserCount()).isZero();
         assertThat(d7.getRetentionRate()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    void shouldExcludeCohortWhoseTargetDayIsToday() {
+        // 边界：days=7、today=2026-09-16 时，cohort 09-09 的 D7 目标日正好是「今天」——今天尚未过完，
+        // 它的 D7 人数必然偏少，计入摘要会把 D7 列系统性拉低（复核已用 jshell 复现）。
+        // 同时断言 cohort 09-08 的 D7 目标日是「昨天」（已过完），必须被计入。
+        List<TrackRetentionPointResp> boundary = List.of(
+            point(LocalDate.of(2026, 9, 8), 0, 10L),
+            point(LocalDate.of(2026, 9, 8), 7, 3L),
+            point(LocalDate.of(2026, 9, 9), 0, 999L),
+            point(LocalDate.of(2026, 9, 9), 7, 999L));
+
+        TrackRetentionResp resp = TrackRetentionMatrixBuilder.build(7, TODAY, boundary);
+
+        TrackRetentionSummaryResp d7 = resp.getSummary().get(1);
+        assertThat(d7.getDayOffset()).isEqualTo(7);
+        // 目标日=今天（09-09 + 7 = 09-16）的 cohort 不得计入：若被算进去，基线会变成 1009 而不是 10
+        assertThat(d7.getCohortSize()).isEqualTo(10L);
+        assertThat(d7.getUserCount()).isEqualTo(3L);
+        assertThat(d7.getRetentionRate()).isEqualByComparingTo(new BigDecimal("0.3"));
+    }
+
+    @Test
+    void shouldKeepMatrixAndSummaryWindowsConsistent() {
+        // 自洽性：矩阵的最大目标日与摘要的最大目标日必须是同一天（今天 - 1），
+        // 两侧都不得把「今天」当成已过完的目标日
+        TrackRetentionResp resp = TrackRetentionMatrixBuilder.build(7, TODAY, List.of());
+
+        LocalDate lastMatrixCohort = LocalDate.parse(resp.getCohortDates().get(resp.getMatrixDays() - 1));
+        int maxMatrixOffset = resp.getDayOffsets().get(resp.getDayOffsets().size() - 1);
+
+        assertThat(lastMatrixCohort.plusDays(maxMatrixOffset)).isEqualTo(TODAY.minusDays(1));
     }
 
     @Test
@@ -111,10 +144,10 @@ class TrackRetentionMatrixBuilderTest {
 
     @Test
     void shouldComputeEarliestCohortDateCoveringBothWindows() {
-        // days=7：摘要窗口 09-03..09-09 与矩阵窗口 09-03..09-09 重合
-        assertThat(TrackRetentionMatrixBuilder.earliestCohortDate(7, TODAY)).isEqualTo(LocalDate.of(2026, 9, 3));
-        // days=30：摘要窗口回溯 30 天到 08-17，再加 30 天偏移上限
-        assertThat(TrackRetentionMatrixBuilder.earliestCohortDate(30, TODAY)).isEqualTo(LocalDate.of(2026, 7, 19));
+        // days=7：摘要窗口 09-02..09-08（末端 today-8），矩阵窗口 09-03..09-09，取更早的 09-02
+        assertThat(TrackRetentionMatrixBuilder.earliestCohortDate(7, TODAY)).isEqualTo(LocalDate.of(2026, 9, 2));
+        // days=30：摘要窗口回溯 30 天到 07-18，再加 30 天偏移上限（07-18 + 30 = 08-17 为窗口末端）
+        assertThat(TrackRetentionMatrixBuilder.earliestCohortDate(30, TODAY)).isEqualTo(LocalDate.of(2026, 7, 18));
     }
 
     @Test
