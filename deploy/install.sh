@@ -157,6 +157,98 @@ starter_version_from_pom() {
   sed -n 's/.*<ypbin-starter.version>\([^<]*\)<\/ypbin-starter.version>.*/\1/p' "$pom" | head -1
 }
 
+# 读取 starter 仓库根 pom 的 revision。
+# starter 用 flatten-maven-plugin 的 ${revision} 统一版本，与 admin 侧的
+# <ypbin-starter.version> 是两个不同的标签名——不能复用 starter_version_from_pom，
+# 否则读不到值（本次就是因此把「实际构建出的版本」打成了未知）。
+starter_revision_from_pom() {
+  local pom="$1"
+  [ -f "$pom" ] || return 1
+  local rev
+  rev="$(sed -n 's|.*<revision>\([^<]*\)</revision>.*|\1|p' "$pom" | head -1)"
+  [ -n "$rev" ] || return 1
+  printf '%s' "$rev"
+}
+
+# 选择构建 starter 用的代码引用：优先与 admin 依赖版本一致的 tag。
+# 背景：admin 固定的是「已发布版本」，而 starter 的默认分支在发布后会推进到下一个开发版本
+# （x.y.z-SNAPSHOT）。若直接构建默认分支，装进 .m2 的是 SNAPSHOT，而 admin 需要的那个正式版
+# 只能改从远程仓库取——远程尚未同步（刚发布）或上次失败被 Maven 缓存时，就会直接构建失败。
+# 结果写入全局 STARTER_BUILD_REF（不用命令替换回显：warn 写的是 stdout，回显会把告警混进变量）。
+is_release_version() { # 判定是否为「发布版」（非 SNAPSHOT、非空）
+  case "$1" in
+    ""|*-SNAPSHOT) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+resolve_starter_build_ref() {
+  local repo="$1"
+  local tag="v${STARTER_VERSION}"
+  # detached 下 rev-parse --abbrev-ref HEAD 返回字面量 HEAD，用 symbolic-ref 才能得到可读状态
+  STARTER_BUILD_REF="$(git -C "$repo" symbolic-ref -q --short HEAD 2>/dev/null || echo detached)"
+  if [ -z "$STARTER_VERSION" ]; then
+    return 0
+  fi
+  if ! git -C "$repo" fetch --tags --quiet 2>/dev/null; then
+    warn "无法从远程更新 tag（离线或远端不可达），改用本地已有 tag"
+  fi
+  if git -C "$repo" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+    local checkout_err
+    if checkout_err="$(git -C "$repo" checkout -q "refs/tags/$tag" 2>&1)"; then
+      STARTER_BUILD_REF="$tag"
+      return 0
+    fi
+    # 检出失败必须带上 git 的真实原因（原来 2>/dev/null 把它吞了，只剩一句「检出失败」）
+    local reason
+    reason="$(printf '%s' "$checkout_err" | head -1)"
+    if is_release_version "$STARTER_VERSION"; then
+      die "无法检出 tag $tag：$reason
+     admin 固定的 starter 版本是发布版 $STARTER_VERSION，必须构建该版本才能把它装进本地仓库；
+     继续按分支构建只会产出别的版本，第 [4/7] 步必然失败（且报错点在依赖解析，难以回溯到这里）。
+     请先处理工作区后重跑：git -C $repo status --short"
+    fi
+    warn "找到 tag $tag 但检出失败（$reason），改为构建当前分支 $STARTER_BUILD_REF"
+    return 0
+  fi
+  if is_release_version "$STARTER_VERSION"; then
+    die "未找到 tag $tag（当前引用 $STARTER_BUILD_REF）。
+     admin 固定的 starter 版本是发布版 $STARTER_VERSION；而 Maven 镜像可能只同步了 pom、缺 jar
+     （该现象已实测存在），所以必须用 tag 构建才能把全部产物装进本地仓库。
+     请确认 tag 是否存在并已同步：git -C $repo fetch --tags && git -C $repo tag -l $tag"
+  fi
+  warn "未找到 tag $tag，改为构建当前分支 $STARTER_BUILD_REF（其 revision 未必是 admin 依赖的 $STARTER_VERSION）"
+  return 0
+}
+
+# 构建 starter 并装入本地 Maven 仓库（构建前先用 resolve_starter_build_ref 选好代码引用）。
+build_starter() {
+  resolve_starter_build_ref "$ROOT/ypbin-starter"
+  if [ -n "$STARTER_VERSION" ] && [ "$STARTER_BUILD_REF" = "v$STARTER_VERSION" ]; then
+    info "已切到 tag $STARTER_BUILD_REF 构建（与 admin 依赖的版本一致）"
+  fi
+  cd "$ROOT/ypbin-starter"
+  # 完整输出错误（不吞日志）：失败时打印 maven 日志尾部。构建期间 stdout 被 tee|tail 接管，
+  # 终端会长时间无输出（约 3-6 分钟）——先提示，避免被误判为「脚本卡死/网络挂起」。
+  info "开始构建 starter（约 3-6 分钟，期间本终端无输出属正常；日志文件 /tmp/starter-build.log）"
+  if ! mvn -DskipTests -Djacoco.skip=true install 2>&1 | tee /tmp/starter-build.log | tail -20; then
+    die "starter 构建失败（完整日志 /tmp/starter-build.log）"
+  fi
+  # 版本号取「实际构建出来的 revision」，不再用 admin 解析出的版本冒充（那是误导）
+  local built_version
+  built_version="$(starter_revision_from_pom "$ROOT/ypbin-starter/pom.xml" || true)"
+  [ -n "$built_version" ] || built_version="未知"
+  # 构建产物与 admin 依赖的版本不一致时，第 [4/7] 步会以「解析不到该坐标」的形式失败，而根因在这里；
+  # 所以在源头就明确失败，别让使用者去 [4/7] 的报错里倒推。
+  if [ -n "$STARTER_VERSION" ] && [ "$built_version" != "$STARTER_VERSION" ]; then
+    die "构建出的 starter 版本是 $built_version，而 admin 依赖的是 $STARTER_VERSION（构建自 $STARTER_BUILD_REF）。
+     两者不一致时第 [4/7] 步解析不到 cn.ypbin:ypbin-starter-bom:$STARTER_VERSION。
+     请用对应 tag 构建该发布版，或把 admin 的 ypbin-starter.version 改成与之一致。
+     starter 仓库当前状态：$(git -C "$ROOT/ypbin-starter" status --short | head -5)"
+  fi
+  ok "starter $built_version 已装入本地 Maven 仓库（构建自 $STARTER_BUILD_REF）"
+}
+
 # ---------- 参数 ----------
 # BRANCH/ROOT：支持 -b/--branch 指定分支；ROOT 默认按分支隔离(/opt/ypbin/<分支>,
 # main 保持 /opt/ypbin/main)，与单体版 /opt/ypbin/boot 等分开，避免代码互相覆盖/分支冲突，
@@ -171,6 +263,9 @@ ADMIN_UI_PORT="${ADMIN_UI_PORT:-19000}"
 # starter 版本：从 admin 仓库 pom 的 ypbin-starter.version 自动解析（唯一事实源，
 # 与 CI dispatch 自动升级保持一致），无需手工同步；目录未就绪时留空，由 [3/7] 构建前解析。
 STARTER_VERSION="${STARTER_VERSION:-}"
+# 构建 starter 时实际采用的代码引用与构建出的 revision（由 build_starter 写入，仅供日志与校验）
+STARTER_BUILD_REF=""
+
 # 仓库源（GitHub / Gitee 镜像自动探测；显式 YPBIN_REPO 优先）
 REPO_BASE=""
 GITEE_REPO="${GITEE_REPO:-https://gitee.com/wenbin_wb}"
@@ -418,7 +513,13 @@ pull_repo() { # $1=仓库目录 $2=分支
     fi
     die "$repo fetch 失败（GitHub/Gitee 均不可达，请检查网络或指定 YPBIN_REPO 代理）"
   fi
-  if git merge-base --is-ancestor "origin/$branch" HEAD 2>/dev/null; then
+  if ! git symbolic-ref -q HEAD >/dev/null 2>&1; then
+    # detached HEAD：本脚本 [3/7] 会按 tag 构建，留下的正是这个状态，直接恢复到分支即可，
+    # 不是「与远程分叉」——原来会打一条误导性的分叉告警
+    info "$repo 当前为 detached HEAD（上次按 tag 构建所致），恢复到分支 $branch"
+    git checkout -f "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
+    git reset --hard "origin/$branch"
+  elif git merge-base --is-ancestor "origin/$branch" HEAD 2>/dev/null; then
     git checkout "$branch" 2>/dev/null && git merge --ff-only "origin/$branch" 2>/dev/null \
       || git reset --hard "origin/$branch"
   else
@@ -426,6 +527,11 @@ pull_repo() { # $1=仓库目录 $2=分支
     warn "$repo 与远程分叉，强制对齐 origin/$branch"
     git checkout -f "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
     git reset --hard "origin/$branch"
+  fi
+  local current_branch
+  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+  if [ "$current_branch" != "$branch" ]; then
+    warn "$repo 未能恢复到分支 $branch（当前 $current_branch），后续构建可能用到非预期代码"
   fi
 }
 pull_repo "$ROOT/ypbin-starter" master
@@ -457,24 +563,14 @@ if [ "$ASSUME_YES" != "1" ]; then
   fi
 fi
 if [ "${SKIP_STARTER_BUILD:-0}" != "1" ]; then
-  cd "$ROOT/ypbin-starter"
-  # 完整输出错误（不吞日志）：失败时打印 maven 日志尾部。构建期间 stdout 被 tee|tail 接管，
-  # 终端会长时间无输出（约 3-6 分钟）——先提示，避免被误判为「脚本卡死/网络挂起」。
-  info "开始构建 starter（约 3-6 分钟，期间本终端无输出属正常；日志文件 /tmp/starter-build.log）"
-  if ! mvn -DskipTests -Djacoco.skip=true install 2>&1 | tee /tmp/starter-build.log | tail -20; then
-    die "starter 构建失败（完整日志 /tmp/starter-build.log）"
-  fi
-  ok "starter $STARTER_VERSION 已装入本地 Maven 仓库"
+  build_starter
 else
   # 确认本地仓库已有解析出的 starter 版本（没有则强制构建）
   if [ -n "$STARTER_VERSION" ] && [ -d "$HOME/.m2/repository/cn/ypbin/ypbin-starter-core/$STARTER_VERSION" ]; then
     ok "使用本地 Maven 仓库已有 starter $STARTER_VERSION"
   else
     [ -n "$STARTER_VERSION" ] && warn "本地 Maven 仓库无 starter $STARTER_VERSION，强制构建" || warn "未能解析 starter 版本，强制构建最新代码"
-    cd "$ROOT/ypbin-starter"
-    info "开始构建 starter（约 3-6 分钟，期间本终端无输出属正常；日志文件 /tmp/starter-build.log）"
-    mvn -DskipTests -Djacoco.skip=true install 2>&1 | tee /tmp/starter-build.log | tail -20 \
-      || die "starter 构建失败（完整日志 /tmp/starter-build.log）"
+    build_starter
   fi
 fi
 fi
@@ -488,7 +584,21 @@ info "[4/7] 构建后端 5 个服务"
 cd "$ROOT/ypbin-admin"
 # 完整输出错误（不吞日志）
 if ! mvn -DskipTests clean package 2>&1 | tee /tmp/admin-build.log | tail -20; then
-  die "admin 构建失败（完整日志 /tmp/admin-build.log）"
+  # 只有「依赖解析失败」才值得重试：刚发布的版本在镜像上尚未同步时，本地会留下 *.lastUpdated
+  # 失败缓存（release 版本默认不再自动重试），-U 可强制刷新后重新解析；编译错误等重试无意义。
+  if grep -qE "Could not (find|resolve)|Non-resolvable|could not be resolved" /tmp/admin-build.log; then
+    warn "admin 构建失败于依赖解析（可能刚发布的版本尚未被镜像同步，或上次失败被缓存），用 -U 重试一次"
+    # 重试写独立日志：否则 die 指向的文件里已经没有首次失败的证据了
+    if ! mvn -U -DskipTests clean package 2>&1 | tee /tmp/admin-build-retry.log | tail -20; then
+      die "admin 构建失败（首次日志 /tmp/admin-build.log，重试日志 /tmp/admin-build-retry.log）。
+     若报的是 Could not find artifact cn.ypbin:ypbin-starter-*:$STARTER_VERSION，
+     说明镜像只同步了 pom 没同步 jar——请确认第 [3/7] 步已按 tag 构建出 $STARTER_VERSION（脚本会切 tag），
+     或改用能访问 Maven Central 的网络。"
+    fi
+    ok "依赖解析在 -U 重试后成功"
+  else
+    die "admin 构建失败（完整日志 /tmp/admin-build.log）"
+  fi
 fi
 JAR_DIR="$ROOT/ypbin-admin/target/microservice-jars"
 mkdir -p "$JAR_DIR"
