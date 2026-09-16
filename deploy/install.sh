@@ -354,6 +354,35 @@ install_frontend_deps() {
   return 1
 }
 
+# 校验前端产物在容器内真的可见，必要时强制重建前端容器（自愈）。
+# 现场教训：产物目录通过 **bind mount** 进容器，而 bind mount 绑定的是"挂载那一刻的目录 inode"。
+# 若宿主机目录被删除后重建（例如按旧指引 rm -rf admin-ui-dist），运行中的容器仍指向那个已被删除的
+# 目录、看到的是空目录 → nginx 对无 index 的目录返回 403；而 `docker compose up -d --build`
+# **不会重建"配置未变"的容器**，于是脚本打印"部署完成"、页面却是 403。
+# 这里做一次可见性校验：不可见就 force-recreate 一次再校验，仍不可见则明确失败。
+verify_frontend_mount() {
+  [ "$NO_DOCKER" = "1" ] && return 0
+  local container=ypbin-admin-ui attempt
+  for attempt in 1 2; do
+    if docker exec "$container" test -r /usr/share/nginx/html/index.html 2>/dev/null; then
+      ok "前端产物在容器内可见（$container）"
+      return 0
+    fi
+    if [ "$attempt" = "1" ]; then
+      warn "前端容器读不到 /usr/share/nginx/html/index.html"
+      warn "常见原因：宿主机产物目录被删除后重建，而容器仍指向那个已删除的旧目录（bind mount 绑的是 inode）"
+      warn "强制重建前端容器以重新绑定挂载……"
+      (cd "$ROOT/ypbin-admin/deploy" && docker compose -f docker-compose.yml --env-file "$ENV_FILE" \
+        up -d --force-recreate "$container" >/tmp/frontend-recreate.log 2>&1) || true
+      sleep 3
+    fi
+  done
+  warn "宿主机产物：$(ls -l "$ADMIN_UI_DIST_DIR/index.html" 2>/dev/null || echo '不存在')"
+  warn "挂载实况：docker inspect $container --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{\"\\n\"}}{{end}}'"
+  warn "完整日志：/tmp/frontend-recreate.log"
+  die "前端产物在容器内不可见（页面会返回 403），已停止而不是假装部署成功"
+}
+
 # 判断已有前端产物是否仍然"新鲜"：产物存在，且没有任何比它更新的构建输入。
 # 现场教训：原先只看"index.html 存在就复用"，于是改了前端源码（例如埋点 SDK）或
 # .env.production 后重新部署时仍复用旧产物——等于静默部署了旧前端。
@@ -1114,6 +1143,8 @@ elif [ "$REBUILD_FRONTEND" != "1" ] && frontend_dist_is_fresh; then
   ok "复用已有前端产物（比源码新）：$ADMIN_UI_DIST_DIR"
   info "如需强制重建：REBUILD_FRONTEND=1（改了前端源码或 apps/web-antd/.env* 时会自动重建）"
 else
+  # 前端构建（重装依赖 + 构建）需要数 GB，磁盘不足会产出半成品
+  check_docker_disk_space 3 || true
   if [ "$REBUILD_FRONTEND" = "1" ]; then
     info "[5.6/7] 按 REBUILD_FRONTEND=1 强制重新构建前端"
   elif [ ! -f "$ADMIN_UI_DIST_DIR/index.html" ]; then
@@ -1183,6 +1214,8 @@ else
     compose_up_diagnose /tmp/compose-up.log || true
     die "compose 启动失败（完整日志 /tmp/compose-up.log）"
   fi
+  # 容器起来了不等于页面能打开：前端是 bind mount，必须校验产物在容器内可见
+  verify_frontend_mount
 fi
 
 # ---------- [7/7] 健康检查 ----------
