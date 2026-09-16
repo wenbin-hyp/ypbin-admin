@@ -38,7 +38,7 @@
 #   MYSQL_ROOT_PASSWORD=           Docker 模式内建 MySQL 密码（必填）
 #   AI_MODEL_SECRET_KEY=           AI 模型 API Key 的加密密钥（**必填**，16/24/32 字节）。
 #                                  用于加解密库内已存的模型密钥，**必须长期保持不变**——换新值后旧密文
-#                                  无法解密。生成：openssl rand -base64 32
+#                                  无法解密。生成：openssl rand -hex 16
 #   NACOS_AUTH_TOKEN= NACOS_AUTH_IDENTITY_KEY= NACOS_AUTH_IDENTITY_VALUE=
 #                                  Nacos 服务端鉴权凭据（自动随机生成，一般无需手传；
 #                                  NACOS_AUTH_TOKEN 需 Base64 且解码后 ≥32 字节）
@@ -692,7 +692,7 @@ if [ ! -f "$ENV_FILE" ]; then
   # 一旦换新 .env（分支部署各自目录）旧密文将永久无法解密。必须由运维显式提供且长期保持不变。
   AI_MODEL_SECRET_KEY="${AI_MODEL_SECRET_KEY:-}"
   [ -n "$AI_MODEL_SECRET_KEY" ] \
-    || die "未设置 AI_MODEL_SECRET_KEY（AI 模型 API Key 的加密密钥，16/24/32 字节，须长期保持不变）。生成：openssl rand -base64 32"
+    || die "未设置 AI_MODEL_SECRET_KEY（AI 模型 API Key 的加密密钥，16/24/32 字节，须长期保持不变）。生成：openssl rand -hex 16"
   # Nacos 服务端鉴权凭据：token 与身份标识值随机生成，避免固定默认值入库
   NACOS_AUTH_TOKEN="${NACOS_AUTH_TOKEN:-$(rand_b64_48)}"
   NACOS_AUTH_IDENTITY_KEY="${NACOS_AUTH_IDENTITY_KEY:-serverIdentity}"
@@ -774,7 +774,7 @@ check_required_key() { # $1=键名 $2=生成命令提示 $3=允许的字节长�
     *) die "${key} 长度必须为 ${allowed} 字节（当前 ${bytes} 字节，${hint}）" ;;
   esac
 }
-check_required_key AI_MODEL_SECRET_KEY '生成：openssl rand -base64 32' '16 24 32'
+check_required_key AI_MODEL_SECRET_KEY '生成：openssl rand -hex 16（32 字节；-hex 12 → 24 字节、-hex 8 → 16 字节）' '16 24 32'
 
 # ---------- [5.5/7] 启动基础设施并初始化（Nacos 配置 + MySQL 库表）----------
 # Docker 模式：先只启动基础设施（nacos/redis/mysql），配置导入和建库完成后再启动业务服务
