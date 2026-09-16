@@ -529,3 +529,38 @@ CREATE TABLE sys_bootstrap_state
     update_time   DATETIME    NOT NULL COMMENT '更新时间',
     PRIMARY KEY (bootstrap_key)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '一次性初始化状态';
+
+
+-- ============================================================
+-- 埋点事件明细（由 ypbin-starter-tracking 的采集端点写入）
+-- 约定：本表由采集链路的**消费者线程**写入，异步线程没有租户上下文，
+--       因此不参与租户隔离（已登记在 ypbin.tenant.ignore-tables）
+-- 幂等：event_id 唯一，落库用 ON DUPLICATE KEY UPDATE id = id（不用 INSERT IGNORE，
+--       后者会把数据截断等错误一并降级为告警，属静默数据丢失）
+-- ============================================================
+CREATE TABLE sys_track_event
+(
+    id            BIGINT       NOT NULL COMMENT '主键',
+    event_id      VARCHAR(64)  NOT NULL COMMENT '客户端事件唯一 ID（去重键）',
+    event_code    VARCHAR(128) NOT NULL COMMENT '事件码：domain.object.action',
+    app_id        VARCHAR(64)  NULL COMMENT '应用标识',
+    user_id       BIGINT       NULL COMMENT '用户 ID（采集时按登录身份补齐）',
+    tenant_id     BIGINT       NULL COMMENT '租户 ID（采集时按租户上下文补齐）',
+    session_id    VARCHAR(64)  NULL COMMENT '会话 ID',
+    anon_id       VARCHAR(64)  NULL COMMENT '匿名标识',
+    trace_id      VARCHAR(64)  NULL COMMENT '链路 ID（网关的 X-Request-Id）',
+    event_time    DATETIME     NULL COMMENT '客户端事件时间（参考值，以 received_time 为准）',
+    received_time DATETIME     NOT NULL COMMENT '服务端接收时间（权威）',
+    page_url      VARCHAR(512) NULL COMMENT '页面地址（已去查询串）',
+    referrer      VARCHAR(512) NULL COMMENT '来源（已去查询串）',
+    ip            VARCHAR(64)  NULL COMMENT '客户端 IP（默认脱敏）',
+    user_agent    VARCHAR(512) NULL COMMENT 'User-Agent 原串（解析在查询侧）',
+    duration_ms   BIGINT       NULL COMMENT '耗时（毫秒）',
+    success       TINYINT      NULL COMMENT '结果：1 成功 0 失败',
+    payload       JSON         NULL COMMENT '事件属性（已按事件目录白名单裁剪）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_track_event_id (event_id),
+    KEY idx_track_code_time (event_code, received_time),
+    KEY idx_track_user_time (user_id, received_time),
+    KEY idx_track_time (received_time)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT '埋点事件明细';
