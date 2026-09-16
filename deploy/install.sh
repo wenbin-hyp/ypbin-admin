@@ -257,6 +257,43 @@ resolve_starter_build_ref() {
   return 0
 }
 
+# Docker 根目录磁盘空间预检（仅告警，不阻断——空间紧张但仍可能构建成功）。
+# 现场教训：构建/拉取镜像写到一半报 "no space left on device"，报错点在 containerd 写镜像层，
+# 看上去像镜像或构建问题，实际是磁盘不足。
+check_docker_disk_space() {
+  local min_gb="${1:-5}" root_dir avail_kb avail_gb
+  root_dir="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$root_dir" ] || root_dir=/var/lib/docker
+  avail_kb="$(df -Pk "$root_dir" 2>/dev/null | awk 'NR==2 {print $4}')"
+  [ -n "$avail_kb" ] || return 0
+  avail_gb=$((avail_kb / 1024 / 1024))
+  if [ "$avail_gb" -lt "$min_gb" ]; then
+    warn "Docker 根目录 $root_dir 所在磁盘仅剩约 ${avail_gb}GB（建议 ≥${min_gb}GB）"
+    warn "构建 4 个服务镜像 + 前端依赖都会显著占空间；不足时会在写镜像层时报 no space left on device"
+    warn "清理：docker builder prune -af && docker image prune -f && docker system df"
+    return 1
+  fi
+  return 0
+}
+
+# compose 启动/构建失败的原因分类与处置提示（读取 /tmp/compose-up.log）
+compose_up_diagnose() {
+  local log="$1"
+  if grep -q "no space left on device" "$log" 2>/dev/null; then
+    warn "真因是【磁盘空间不足】（写镜像层/构建缓存失败），不是 compose 配置或镜像源问题"
+    warn "处置：docker builder prune -af && docker image prune -f；仍不足则扩容或迁移 Docker 数据目录"
+    warn "      前端产物已拷到 admin-ui-dist，可安全删除 ypbin-admin-ui/node_modules 释放数 GB"
+    df -h 2>/dev/null | head -5 || true
+    return 10
+  fi
+  if grep -qE "port is already allocated|Bind for [^ ]* failed" "$log" 2>/dev/null; then
+    warn "真因是【宿主机端口被占用】（与镜像无关），处置见上方 [5.5/7] 同类提示"
+    return 11
+  fi
+  warn "compose 启动失败，完整日志：$log"
+  return 12
+}
+
 # 安装前端依赖：放宽 pnpm 拉取超时并自动重试一次。
 # 现场教训：大包（@iconify/json ~95MB、@turbo/linux-64 ~19MB）在 pnpm 默认 60s 拉取超时下会中断，
 # 报 [23] The operation was aborted due to timeout；此时即使已复用 1600+ 个包，整个安装仍算失败。
@@ -314,6 +351,11 @@ infra_failure_reason() {
     warn "自查：docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep ${port:-8080}；sudo ss -ltnp | grep :${port:-8080}"
     warn "处置：若是本套残留容器 → docker rm -f <容器名>（或 docker compose -f deploy/docker-compose.yml down）后重跑"
     return 10
+  fi
+  if grep -q "no space left on device" /tmp/infra-up.log 2>/dev/null; then
+    warn "真因是【磁盘空间不足】（写镜像层失败），与镜像源无关"
+    warn "处置：docker builder prune -af && docker image prune -f；或扩容/迁移 Docker 数据目录"
+    return 13
   fi
   if grep -qE "pull access denied|manifest unknown|not found: manifest|i/o timeout|TLS handshake timeout|no such host|connection refused" /tmp/infra-up.log 2>/dev/null; then
     warn "真因是镜像拉取失败（网络或仓库侧）"
@@ -1065,11 +1107,17 @@ if [ "$NO_DOCKER" = "1" ]; then
   done <<< "$SERVICES"
 else
   info "[6/7] Docker 模式：compose 启动（含 Nacos/Redis/MySQL 基础设施）"
+  check_docker_disk_space 5 || true
   cd "$ROOT/ypbin-admin/deploy"
   # 微服务 compose 已内嵌基础设施（nacos/redis/mysql），单文件拉起全链路
   export DOCKER_BUILDKIT=0
   # legacy builder: FROM 基础镜像优先取本地 docker images(离线/受限环境可先 docker load 再构建,避免 buildkit 联网解析元数据卡死)
-  docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d --build
+  # 输出落日志以便失败时分类（终端仍实时显示尾部 20 行）
+  if ! docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d --build 2>&1 \
+      | tee /tmp/compose-up.log | tail -20; then
+    compose_up_diagnose /tmp/compose-up.log || true
+    die "compose 启动失败（完整日志 /tmp/compose-up.log）"
+  fi
 fi
 
 # ---------- [7/7] 健康检查 ----------
