@@ -1135,13 +1135,27 @@ done
 echo ""
 echo "================================================"
 echo "  ypbin-admin 微服务版部署完成"
-echo "  网关入口:   http://localhost:$GATEWAY_PORT"
-echo "  Nacos 控制台: http://${NACOS_ADDR:-localhost:8848}/nacos （默认 nacos/nacos）"
-echo "  登录接口:   POST http://localhost:$GATEWAY_PORT/auth/login"
-echo "  部署目录:   $ROOT"
+# 访问地址用「默认出口 IP」而不是 localhost：远程部署时 localhost 毫无用处；
+# 也不用 hostname -I 的第一个（它常把 docker0 的 172.x 排在前面）
+ACCESS_HOST="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}' | head -1)"
+[ -n "$ACCESS_HOST" ] || ACCESS_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+[ -n "$ACCESS_HOST" ] || ACCESS_HOST="localhost"
+NAT_HINT=""
+case "$ACCESS_HOST" in
+  10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) NAT_HINT="  ← 检测到内网 IP，外网访问请换成公网 IP" ;;
+esac
+echo "  前端（管理后台）: http://$ACCESS_HOST:${ADMIN_UI_PORT:-19000}$NAT_HINT"
+echo "  网关入口:        http://$ACCESS_HOST:$GATEWAY_PORT"
+echo "  登录接口:        POST http://$ACCESS_HOST:$GATEWAY_PORT/auth/login"
+echo "  Nacos 控制台:    http://$ACCESS_HOST:8848/nacos （默认 nacos/nacos）"
+echo "  MySQL:           $ACCESS_HOST:3306/ypbin_admin  用户 root"
+echo "  数据库密码:      见 $ENV_FILE 的 MYSQL_ROOT_PASSWORD（读取命令）"
+echo "                   grep ^MYSQL_ROOT_PASSWORD= $ENV_FILE"
+echo "  部署目录:        $ROOT"
 if [ "$NO_DOCKER" = "1" ]; then
-  echo "  服务日志:   $ROOT/logs/*.log"
+  echo "  服务日志:        $ROOT/logs/*.log"
 else
-  echo "  管理:       cd $ROOT/ypbin-admin/deploy && docker compose -f docker-compose.yml logs -f"
+  echo "  XXL-Job 控制台:  http://$ACCESS_HOST:18085/xxl-job-admin （默认 admin/123456）"
+  echo "  管理:            cd $ROOT/ypbin-admin/deploy && docker compose -f docker-compose.yml logs -f"
 fi
 echo "================================================"
