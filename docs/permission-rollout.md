@@ -65,11 +65,15 @@ Bean 条件在**启动期**求值，配置热更新不生效，必须重启。
 - **「system 没有 Redis DAO」这个前提已不成立**：`ypbin-common/pom.xml:18-25` 已把
   `sa-token-redis-template` 加进**所有服务**的公共依赖（注释本身写明是为修「system 在线用户列表恒为空」），
   system 与 auth/网关现在共用同一套 Redis 会话存储。
-- **但不能据此直接打开**：会话值的 JSON 序列化由 Sa-Token 的 SPI 插件决定。`sa-token-jackson3` 只声明在
-  `ypbin-gateway/pom.xml:47` 与 `ypbin-auth/pom.xml:61`，**system/ai 没有**；缺插件时默认的
-  `SaJsonTemplateDefaultImpl` 每个方法都抛 `NotImplException("未实现具体的 json 转换器")`
-  （对 `sa-token-core:1.46.0` 字节码的静态核实）。system 能否读出 auth 写的会话**取决于运行期行为，
-  本机无 Redis、未启动服务，未能实测**。
+- **结论已由实测更正**：`sa-token-jackson3` **并不是 system/ai 缺失的依赖** ——
+  `mvn -pl ypbin-service/ypbin-system dependency:tree -Dincludes=cn.dev33:sa-token-jackson3` 实测输出
+  `cn.dev33:sa-token-jackson3:jar:1.46.0:compile`，它是经 `sa-token-spring-boot4-starter` **传递**进来的
+  （与"读 Token-Session 时运行的正是 `SaJsonTemplateForJackson3`"这一现场证据吻合）。
+  ⇒ 原先"缺序列化插件 ⇒ 打开拦截器可能全站 401"的推断**不成立**，无需补依赖。
+- **但有一条更要紧的规则**：凡**写入 Session 的对象**都必须登记进
+  `META-INF/satoken/sa-json-type.list`（Sa-Token 用 `@class` 多态白名单校验，未登记则**读**会话时抛
+  `InvalidTypeIdException`）。本轮"在线用户终端字段全空"即因此（`OnlineUserHelper$Terminal` 漏登记，已修）。
+  ⚠️ 新增会话对象时务必同步登记。
 
 **动作**：**先在 auth 上验证登录校验链路**（auth 本就开着拦截器，属于既有事实），确认「登录 → 携带 token
 访问 auth 受保护接口」正常，再动 system。若在 system 上开启后出现 `NotImplException` 或「登录状态已过期」，
