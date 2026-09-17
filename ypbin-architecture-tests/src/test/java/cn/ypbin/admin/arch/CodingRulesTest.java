@@ -22,6 +22,7 @@ import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import com.tngtech.archunit.lang.ArchRule;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
@@ -63,6 +64,44 @@ class CodingRulesTest {
     private static final DescribedPredicate<JavaFieldAccess> ACCESSES_SYSTEM_ERR =
         DescribedPredicate.describe("访问 System.err", access ->
             access.getName().equals("err") && access.getTargetOwner().isAssignableTo(System.class));
+
+    /** 业务实现层包（各业务域的 {@code service/impl}） */
+    private static final String SERVICE_IMPL_PACKAGE = "..service.impl..";
+
+    /** 宿主端口适配层包（各业务域的 {@code provider}） */
+    private static final String PROVIDER_PACKAGE = "..provider..";
+
+    /**
+     * 规则：{@code service/impl} 不得依赖 {@code provider}。
+     *
+     * <p><strong>为什么需要这条</strong>：{@code provider} 是「宿主按 starter 端口契约给出的适配实现」
+     * （数据范围、字典、敏感词、日志等），{@code service/impl} 是业务实现层。实现层直接依赖适配实现类，
+     * 会把「实现层 → 适配层」的依赖方向倒置成硬耦合：适配实现一旦换实现（换库、换缓存、换策略）
+     * 就要动业务实现，且两者之间无法独立测试与替换。</p>
+     *
+     * <p><strong>这是一次真实回归的护栏</strong>（2026-09-17）：{@code SysUserServiceImpl} 曾直接持有
+     * {@code provider.AdminDataScopeHandler} 以复用「该部门是否在数据范围内」的判定，导致写入路径与
+     * 读取路径共用同一个具体实现类；上一轮重构把该判定抽为 {@code service/support} 下的共享能力
+     * （{@code DataScopeResolver}/{@code AbstractDataScopeResolver}），{@code provider} 只保留端口适配。
+     * 本条规则把「不许倒回去」固化成构建失败，而不是靠 review 记得。</p>
+     *
+     * <p><strong>方向性</strong>：只禁止 {@code service/impl → provider}。反向（{@code provider} 里的适配器
+     * 依赖 {@code service/impl}）不在本条约束内，由 {@code ArchRuleSelfCheckTest} 显式断言不被误报。</p>
+     *
+     * <p><strong>为什么用包名通配而非写死模块</strong>：admin 是多业务域仓（{@code system} / {@code ai} /
+     * 未来的域），写死 {@code cn.ypbin.admin.system} 会让新域的同类违规静默逃逸——正是本仓
+     * 「门禁必须覆盖完整」的一贯口径。</p>
+     *
+     * @return 规则本体（门禁与「有效性自检」共用同一对象，避免自检验的是副本）
+     */
+    static ArchRule serviceImplShouldNotDependOnProvider() {
+        return noClasses()
+            .that().resideInAPackage(SERVICE_IMPL_PACKAGE)
+            .should().dependOnClassesThat().resideInAPackage(PROVIDER_PACKAGE)
+            .because("service/impl 是业务实现层、provider 是宿主端口适配层；实现层直接依赖适配实现类会把"
+                + "「实现层 → 适配层」倒置成硬耦合（历史回归：SysUserServiceImpl 依赖 provider.AdminDataScopeHandler）。"
+                + "共享能力请抽到 service/support（如 DataScopeResolver），provider 只保留端口适配");
+    }
 
     private static JavaClasses classes;
 
@@ -116,6 +155,12 @@ class CodingRulesTest {
         assertThat(violations)
             .as("字段注入让依赖不可变性与可测性变差（本仓统一 @RequiredArgsConstructor + final 字段）")
             .isEmpty();
+    }
+
+    @Test
+    @DisplayName("service/impl 包禁止依赖 provider 包（实现层不得直接依赖宿主端口适配实现）")
+    void serviceImplShouldNotDependOnProviderPackages() {
+        serviceImplShouldNotDependOnProvider().check(classes);
     }
 
     /**

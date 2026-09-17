@@ -8,6 +8,26 @@
 
 ### 新增
 
+- **埋点事件目录分层：新增 admin 的 project 层目录**（`ypbin-common/src/main/resources/META-INF/ypbin/tracking-events.json`）。
+  承接从 starter 的 base 目录**迁出**的业务示例事件 `system.user.export`（starter 侧同批把它从 `docs/tracking-events.json` 移除）。
+  运行时仍是「base + 宿主项目目录合并」：starter 的 `TrackingCatalogLoader` 用 `classpath*:` 取回类路径上
+  **全部**同名资源、按所在归档区分两层后合并，同一事件码以 project 为准并在启动时以 WARN 逐字段打印覆盖差异
+  （`TrackingEventCatalog#overriddenCodes()` 另给出可编程的覆盖标注）。
+  - **为什么放 `ypbin-common` 而不是 `ypbin-system`**：目录必须落在**记录事件的那个服务**的类路径上——
+    `TrackRecorder` 在录制入口就按目录校验事件码，而 auth 与 system 都会录制（`ypbin-common` 是两者共同的宿主 jar）。
+    只放 `ypbin-system` 会让 auth 侧录制 admin 自有事件时被判「未登记」。
+  - **事件码集合不变**：迁移前后「base ∪ project」的**联合视图逐码等价**（迁移前 base 10 码；
+    迁移后 base 9 码 + project 1 码，并集仍是同样的 10 码，description / properties / type / maxLength 逐字段一致）。
+    故前端生成物 `events.generated.ts` **零改动**、漂移门禁保持绿。
+  - **该码目前无发送方**（全仓无 `system.user.export` 的上报点，也无按码分支的消费方，只有事件目录页的只读展示）——
+    属**死事件**，本次按既定决策只做「迁位」不做删除；删码是破坏性动作，需单独决策。
+- **架构门禁新增规则：`service/impl` 禁止依赖 `provider`**（`ypbin-architecture-tests` 的 `CodingRulesTest`）。
+  `provider` 是宿主按 starter 端口契约给出的适配实现层、`service/impl` 是业务实现层，实现层直连适配实现类会把依赖方向
+  倒置成硬耦合。这是一次**真实回归**的护栏：`SysUserServiceImpl` 曾直接持有 `provider.AdminDataScopeHandler` 复用
+  「该部门是否在数据范围内」的判定，上一轮重构已抽为 `service/support` 的共享能力（`DataScopeResolver`），本规则把
+  「不许倒回去」固化成构建失败。规则带**有效性自检**：合成违规（`service/impl` 持有真实 `provider.AdminDataScopeHandler`）
+  必须转红，同时断言**反向依赖（provider → service/impl）与无关依赖不被误报**（证明方向性正确、非恒真也非恒假）。
+
 - **AI 用量落库：宿主侧 `AiUsageListener` 实现（`ypbin-ai` 的 `AdminAiUsageListener`）**。
   此前 `ai_usage_log` **没有任何写入方**（全仓只有 Mapper 与统计读取），用量看板恒为空。
   starter 这一批补齐了回调触发点并改了契约（`AiUsageInfo` 的 token 由 `long` 改为可空 `Long`，

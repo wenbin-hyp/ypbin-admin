@@ -12,6 +12,9 @@ package cn.ypbin.admin.arch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import cn.ypbin.admin.arch.synthetic.provider.ServiceImplDependentAdapter;
+import cn.ypbin.admin.arch.synthetic.service.impl.ProviderDependencyViolation;
+import cn.ypbin.admin.arch.synthetic.service.impl.SupportOnlyDependency;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaFieldAccess;
@@ -124,6 +127,25 @@ class ArchRuleSelfCheckTest {
             .filter(field -> field.isAnnotatedWith(Autowired.class))
             .count();
         assertThat(injected).as("若为 0，说明字段注入规则在字节码层根本匹配不到（规则恒真）").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("service/impl → provider 规则自检：合成违规必须转红，无关依赖与反向依赖必须放过")
+    void serviceImplToProviderRuleShouldBeAccurate() {
+        ArchRule rule = CodingRulesTest.serviceImplShouldNotDependOnProvider();
+
+        // 命中：service/impl 持有 provider.AdminDataScopeHandler（复刻 2026-09-17 那次的真实回归形态）
+        JavaClasses violators = new ClassFileImporter().importClasses(ProviderDependencyViolation.class);
+        assertThatThrownBy(() -> rule.check(violators))
+            .as("规则必须能抓住「实现层直连宿主端口适配实现」——抓不住说明包谓词写错，规则是恒真的假门禁")
+            .isInstanceOf(AssertionError.class);
+
+        // 放过：service/impl 只依赖 JDK 类型；反向依赖（provider → service/impl）不在本条约束内
+        JavaClasses clean = new ClassFileImporter()
+            .importClasses(SupportOnlyDependency.class, ServiceImplDependentAdapter.class);
+        assertThat(rule.evaluate(clean).hasViolation())
+            .as("规则方向性必须正确：既不能把 service/impl 的正常依赖判违规，也不能拦 provider 的反向依赖")
+            .isFalse();
     }
 
     /** 合成违规：printStackTrace() */
