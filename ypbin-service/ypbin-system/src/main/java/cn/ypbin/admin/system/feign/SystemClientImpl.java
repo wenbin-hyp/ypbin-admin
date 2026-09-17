@@ -131,10 +131,22 @@ public class SystemClientImpl implements ISystemClient {
         return R.ok(userService.getByUsername(username));
     }
 
+    /**
+     * 按 ID 取用户（供 auth 的第三方回调等<b>匿名</b>链路使用）。
+     *
+     * <p>匿名链路必然没有网关签发的 {@code X-Tenant-Id}（{@code SaTokenGatewayAuthProvider}
+     * 仅在登录后签发），而 {@code /auth/social/callback/**} 又在网关白名单内，故这里必须走
+     * {@code getByIdGlobal}（内部 {@code TenantContext.executeIgnore}）——否则租户拦截器
+     * fail-closed 会抛「缺少租户上下文」，第三方登录直接失败。与同文件其余 6 个端点一致：
+     * 租户忽略留在 service 一处，本端点只做路由。</p>
+     *
+     * @param userId 用户 ID
+     * @return 用户统一响应体
+     */
     @Override
     @GetMapping("/user-by-id")
     public R<SysUser> getUserById(@RequestParam("userId") Long userId) {
-        return R.ok(userService.getById(userId));
+        return R.ok(userService.getByIdGlobal(userId));
     }
 
     @Override

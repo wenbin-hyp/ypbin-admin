@@ -98,6 +98,14 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
     }
 
     @Override
+    public SysUser getByIdGlobal(Long userId) {
+        // 内部端点（登录/第三方回调/令牌校验）到达这里时通常还没有网关签发的租户头，
+        // 租户拦截器 fail-closed 会抛「缺少租户上下文」，故显式忽略租户过滤——
+        // 与 getByUsername/getByPhone 同口径，且不像覆写 getById 那样改变其它调用者的隔离语义
+        return TenantContext.executeIgnore(() -> getById(userId));
+    }
+
+    @Override
     public boolean verifyPassword(Long userId, String rawPassword) {
         SysUser user = TenantContext.executeIgnore(() -> getById(userId));
         return user != null && user.getPassword() != null
