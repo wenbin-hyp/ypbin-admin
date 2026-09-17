@@ -103,6 +103,22 @@ public class SystemClientImpl implements ISystemClient {
         return R.ok(permissionService.listRoleCodes(userId));
     }
 
+    /**
+     * 平台用户判定（供 ai 的 {@code PlatformUserChecker} 实现复用）。
+     *
+     * <p>直接委托 {@code SysPermissionService#isPlatformUser}——判定口径（用户类型/启用/未删除）
+     * 与租户忽略（该方法内部 {@code TenantContext.executeIgnore}）都在 service 一处，本端点只做路由，
+     * 不在传输层重写一遍查询条件。</p>
+     *
+     * @param userId 用户 ID
+     * @return 是平台用户返回 {@code true} 的统一响应体
+     */
+    @Override
+    @GetMapping("/platform-user")
+    public R<Boolean> isPlatformUser(@RequestParam("userId") Long userId) {
+        return R.ok(permissionService.isPlatformUser(userId));
+    }
+
     @Override
     @GetMapping("/routes")
     public R<List<RouteResp>> listRoutes(@RequestParam("userId") Long userId) {

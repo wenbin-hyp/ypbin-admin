@@ -47,6 +47,18 @@ public class ISystemClientFallback implements ISystemClient {
         return unavailable();
     }
 
+    /**
+     * 平台用户判定降级：返回失败 {@code R}（{@code code=500}）。
+     *
+     * <p>刻意不返回 {@code false}：判定器（{@code AiPlatformUserChecker}）据 {@code success=false}
+     * 上抛异常并记完整堆栈。若在此返回「非平台用户」，一次 system 抖动就会被呈现成
+     * 「仅平台用户可访问」这种正常业务结论，排查时毫无痕迹（禁静默降级）。</p>
+     */
+    @Override
+    public R<Boolean> isPlatformUser(Long userId) {
+        return unavailable();
+    }
+
     @Override
     public R<List<RouteResp>> listRoutes(Long userId) {
         return unavailable();
