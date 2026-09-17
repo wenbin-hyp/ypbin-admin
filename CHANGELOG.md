@@ -67,6 +67,8 @@
 
 ### 修复
 
+- **用户名查重移出数据范围，跨部门重名改为友好业务错误**（`SysUserServiceImpl` / `UserAccountSupport` / `SysUserMapper`）：改用**语句级** `@InterceptorIgnore(dataPermission = "true")` 的全局计数语句（`countByUsernameGlobal`），不再受 `@DataPermission` 部门条件影响。
+
   `SysUserMapper`）。`uk_username` 是**不带 `tenant_id` 的全局唯一键**，而 `updateUser` 带
   `@DataPermission`（数据范围按部门过滤），原先的 `exists()` 查重落在该范围内 ⇒ **跨部门重名查不到** ⇒
   校验通过后由数据库唯一键抛原始 SQL 错误。现改走语句级跳过数据权限的
