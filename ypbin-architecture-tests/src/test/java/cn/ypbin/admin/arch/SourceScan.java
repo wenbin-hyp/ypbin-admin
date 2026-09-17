@@ -134,13 +134,26 @@ final class SourceScan {
     }
 
     /**
-     * 本仓全部模块目录（顶层 modules + 各 profile 的 modules，去重、存在性过滤）。
+     * 本仓全部模块目录：取聚合 pom 里<b>所有</b> {@code <modules>} 块（顶层 + 每个 profile）。
      *
-     * @return 模块目录
+     * <p>刻意不写死 profile 名：只读「第一个 modules + 某个固定 profile」的话，将来新增 profile
+     * 声明源码模块时，那些模块会<b>静默逃出全部源码规则</b>（复核意见，2026-09-16）。</p>
+     *
+     * @return 模块目录（去重、存在性过滤）
+     * @throws IOException 读 pom 失败
      */
     static List<Path> moduleRoots() throws IOException {
-        Set<String> names = new LinkedHashSet<>(topLevelModules());
-        names.addAll(profileModules("dev-only"));
+        String pom = rootPom();
+        Set<String> names = new LinkedHashSet<>();
+        int cursor = 0;
+        while (cursor < pom.length()) {
+            int start = pom.indexOf("<modules>", cursor);
+            if (start < 0) {
+                break;
+            }
+            names.addAll(modulesFrom(pom, start));
+            cursor = start + 1;
+        }
         List<Path> roots = new ArrayList<>();
         for (String name : names) {
             Path candidate = repoRoot().resolve(name);

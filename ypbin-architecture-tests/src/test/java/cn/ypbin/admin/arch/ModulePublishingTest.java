@@ -118,6 +118,12 @@ class ModulePublishingTest {
 
         // 场景 A：CI 的真实形态——starter 被检出到工作区根（<repoRoot>/ypbin-starter）
         Path nestedAtRoot = repoRoot.resolve("ypbin-starter");
+        // 标记文件：只删「本测试造的」目录。若上一次运行被 kill 留下残留（git 不显示空目录，
+        // 下一次运行的 rootCreatedByTest 会是 false 从而永不清理），这里先自愈清掉。
+        Path marker = nestedAtRoot.resolve(MARKER_FILE);
+        if (Files.exists(marker)) {
+            deleteRecursively(nestedAtRoot);
+        }
         boolean rootCreatedByTest = !Files.exists(nestedAtRoot);
         Path fakeArchRule = nestedAtRoot.resolve(
             "ypbin-starter-architecture-tests/src/test/java/cn/ypbin/starter/arch/FakeArchRuleTest.java");
@@ -131,6 +137,7 @@ class ModulePublishingTest {
         Path fakeInForeign = foreignRepo.resolve("src/main/java/x/FakeForeignLoopViolation.java");
 
         try {
+            write(marker, "由 ypbin-architecture-tests 的 CI 场景模拟用例创建，可安全删除\n");
             write(fakeArchRule, "package cn.ypbin.starter.arch;\n"
                 + "import com.tngtech.archunit.core.importer.ClassFileImporter;\n"
                 + "class FakeArchRuleTest {\n    ClassFileImporter importer;\n}\n");
@@ -169,28 +176,24 @@ class ModulePublishingTest {
             assertThat(archRuleFilesOutsideGateModule())
                 .noneMatch(path -> path.contains("ypbin-starter/"));
         } finally {
-            deleteFile(fakeArchRule);
-            deleteFile(fakeLoop);
-            deleteFile(fakeInModule);
-            deleteFile(fakeInForeign);
-            deleteDirectoryIfEmpty(nestedInModule.resolve("src/main/java/x"));
-            deleteDirectoryIfEmpty(nestedInModule.resolve("src/main/java"));
-            deleteDirectoryIfEmpty(nestedInModule.resolve("src/main"));
-            deleteDirectoryIfEmpty(nestedInModule);
-            deleteDirectoryIfEmpty(foreignRepo.resolve("src/main/java/x"));
-            deleteDirectoryIfEmpty(foreignRepo.resolve("src/main/java"));
-            deleteDirectoryIfEmpty(foreignRepo.resolve("src/main"));
+            // 是否「本测试拥有」根级嵌套目录：必须在删标记文件**之前**判定
+            boolean ownsNestedRoot = Files.exists(marker);
+            for (Path created : List.of(fakeArchRule, fakeLoop, fakeInModule, fakeInForeign, marker)) {
+                deleteFile(created);
+                pruneEmptyParents(created, repoRoot);
+            }
+            // 我造的 .git 标记目录要先删掉，否则它会让上层目录「非空」而收不掉（复核发现的残留根因）
             deleteDirectoryIfEmpty(foreignRepo.resolve(".git"));
-            deleteDirectoryIfEmpty(foreignRepo);
-            if (rootCreatedByTest) {
+            pruneEmptyParents(fakeInForeign, repoRoot);
+            if (ownsNestedRoot) {
+                // 只删带标记的目录：真实 starter 检出没有该标记，绝不会被误删
                 deleteRecursively(nestedAtRoot);
-            } else {
-                // CI 情形：真实 starter 检出已存在，只删本测试造的两个假文件
-                deleteDirectoryIfEmpty(fakeLoop.getParent());
-                deleteDirectoryIfEmpty(fakeArchRule.getParent());
             }
         }
     }
+
+    /** 只删本测试造的空目录时留下的标记文件名 */
+    private static final String MARKER_FILE = ".ypbin-admin-arch-test-marker";
 
     /** 一段「循环内 DB 调用」的合成源码（与 {@code SourceConventionTest} 的自检样例同源） */
     private static String loopViolationSource(String packageName) {
@@ -231,7 +234,14 @@ class ModulePublishingTest {
         return strays;
     }
 
-    /** 「扫整个工作区根」的旧口径（仅供自检证明假文件确实会被旧实现命中） */
+    /**
+     * 「扫整个工作区根」的旧口径（仅供自检证明假文件确实会被旧实现命中）。
+     *
+     * <p>注意：{@link #scanScopeShouldCoverOwnModulesOnly} 与 {@link #architectureRulesShouldLiveOnlyHere}
+     * 在「工作区里本来就没有嵌套检出」的本机环境是<b>空转</b>的——它们只在 CI 那种 starter 常驻工作区
+     * 的环境里才拦得住（复核意见，2026-09-16）。真正与环境无关、可变异验证的是
+     * {@link #nestedThirdPartyCheckoutMustNotBeScanned}：它自己造出嵌套检出，因此本地也非空转。</p>
+     */
     private static List<String> unscopedJavaFiles() throws IOException {
         Path repoRoot = SourceScan.repoRoot();
         try (Stream<Path> stream = Files.walk(repoRoot)) {
@@ -253,6 +263,35 @@ class ModulePublishingTest {
             Files.deleteIfExists(file);
         } catch (IOException ignored) {
             // 清理尽力而为：残留未跟踪文件不影响断言结论，且下次运行会覆盖
+        }
+    }
+
+    /**
+     * 从给定文件所在目录起逐级向上删除**空目录**，直到 {@code stopAt}（不含）。
+     *
+     * @param created 本测试创建的文件
+     * @param stopAt  停止边界（仓库根）
+     */
+    private static void pruneEmptyParents(Path created, Path stopAt) {
+        Path dir = created.getParent();
+        while (dir != null && !dir.equals(stopAt) && dir.startsWith(stopAt)) {
+            if (!Files.isDirectory(dir)) {
+                dir = dir.getParent();
+                continue;
+            }
+            try (Stream<Path> children = Files.list(dir)) {
+                if (children.findAny().isPresent()) {
+                    return;
+                }
+            } catch (IOException ex) {
+                return;
+            }
+            try {
+                Files.delete(dir);
+            } catch (IOException ex) {
+                return;
+            }
+            dir = dir.getParent();
         }
     }
 
