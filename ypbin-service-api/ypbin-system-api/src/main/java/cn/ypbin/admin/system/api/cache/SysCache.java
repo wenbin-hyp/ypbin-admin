@@ -17,6 +17,8 @@ import cn.ypbin.admin.system.model.dto.SocialAuthConfig;
 import cn.ypbin.starter.cache.util.CacheUtils;
 import cn.ypbin.starter.cloud.feign.support.FeignResponses;
 import cn.ypbin.starter.core.util.SpringUtils;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -136,7 +138,32 @@ public final class SysCache {
         if (userId == null) {
             return;
         }
-        CacheUtils.delete(List.of(ROLE_USER_KEY + userId, PERM_USER_KEY + userId));
+        evictUserAuth(List.of(userId));
+    }
+
+    /**
+     * 批量清除多个用户的角色/权限缓存（角色授权、菜单权限码、租户权限模板变更后调用）。
+     *
+     * <p>合并全部受影响用户的键后**只发一次**删除请求，避免按用户逐个清理造成 N 次缓存往返
+     * （受影响用户数即读写放大倍数）。空集合短路，元素为 null 时跳过。</p>
+     *
+     * @param userIds 受影响用户 ID 集合，允许为 null/空
+     */
+    public static void evictUserAuth(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return;
+        }
+        List<String> keys = new ArrayList<>();
+        for (Long userId : userIds) {
+            if (userId == null) {
+                continue;
+            }
+            keys.add(ROLE_USER_KEY + userId);
+            keys.add(PERM_USER_KEY + userId);
+        }
+        if (!keys.isEmpty()) {
+            CacheUtils.delete(keys);
+        }
     }
 
     /**
