@@ -10,6 +10,7 @@
 package cn.ypbin.admin.common.log;
 
 import cn.ypbin.admin.system.api.feign.ISystemClient;
+import cn.ypbin.starter.log.core.LogClientProvider;
 import cn.ypbin.starter.log.core.LogUserProvider;
 import cn.ypbin.starter.log.dao.LogDao;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -64,5 +65,18 @@ public class RemoteLogAutoConfiguration {
     @ConditionalOnMissingBean(LogUserProvider.class)
     public LogUserProvider identityHeaderLogUserProvider() {
         return new IdentityHeaderLogUserProvider();
+    }
+
+    /**
+     * 无本地客户端信息数据源时，从 sa-token 登录会话取客户端 ID/类型/认证方式。
+     *
+     * <p>刻意不扩展网关身份头：网关只签发 id/username/tenantId/deptId/roles，新增头等于改动跨服务契约；
+     * 而登录时写入 Account-Session 的 {@code LoginUser} 本就带这三项，读会话即可（写方 auth 与
+     * 各读方共用同一份 Redis 会话存储）。</p>
+     */
+    @Bean
+    @ConditionalOnMissingBean(LogClientProvider.class)
+    public LogClientProvider sessionLogClientProvider() {
+        return new SessionLogClientProvider();
     }
 }

@@ -14,9 +14,11 @@ import static org.mockito.Mockito.mock;
 
 import cn.ypbin.admin.system.api.feign.ISystemClient;
 import cn.ypbin.starter.log.autoconfigure.LogAutoConfiguration;
+import cn.ypbin.starter.log.core.LogClientProvider;
 import cn.ypbin.starter.log.core.LogUserProvider;
 import cn.ypbin.starter.log.dao.LogDao;
 import cn.ypbin.starter.log.model.LogRecord;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -53,6 +55,22 @@ class RemoteLogWiringTest {
             assertThat(context).getBean(LogDao.class).isInstanceOf(RemoteLogDao.class);
             assertThat(context).getBean(LogUserProvider.class)
                 .isInstanceOf(IdentityHeaderLogUserProvider.class);
+            // 客户端三列（clientId/clientType/authType）的数据源：starter 默认实现恒返回空，
+            // 本配置必须把它替换成读登录会话的实现，否则 sys_log 三列恒为 null。
+            assertThat(context).getBean(LogClientProvider.class)
+                .isInstanceOf(SessionLogClientProvider.class);
+        });
+    }
+
+    /**
+     * 宿主自带客户端信息实现时必须退让（与 {@code LogDao}/{@code LogUserProvider} 同一约定）。
+     */
+    @Test
+    void hostProvidedClientProviderShouldWinOverSessionProvider() {
+        runner.withUserConfiguration(HostLogClientConfig.class).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(LogClientProvider.class);
+            assertThat(context).getBean(LogClientProvider.class).isInstanceOf(HostLogClientProvider.class);
         });
     }
 
@@ -96,12 +114,33 @@ class RemoteLogWiringTest {
         }
     }
 
+    /**
+     * 模拟宿主自带的客户端信息实现。
+     */
+    @Configuration
+    static class HostLogClientConfig {
+
+        @Bean
+        LogClientProvider hostLogClientProvider() {
+            return new HostLogClientProvider();
+        }
+    }
+
     /** 宿主实现替身（system 侧真实实现为 {@code DbLogProviders.DbLogDao}） */
     static class HostLogDao implements LogDao {
 
         @Override
         public void add(LogRecord logRecord) {
             // 测试替身：不做任何事
+        }
+    }
+
+    /** 宿主客户端信息实现替身 */
+    static class HostLogClientProvider implements LogClientProvider {
+
+        @Override
+        public Optional<LogClientInfo> getCurrentClient() {
+            return Optional.empty();
         }
     }
 }

@@ -144,7 +144,11 @@ VALUES (1, 'site', '系统名称', 'SITE_NAME', 'ypbin-admin', 1, 1, NOW(), 1, 0
        (71, 'social', '微信开放平台是否启用', 'SOCIAL_WECHAT_OPEN_ENABLED', 'false', 1, 1, NOW(), 1, 0),
        (72, 'social', '支付宝是否启用', 'SOCIAL_ALIPAY_ENABLED', 'false', 1, 1, NOW(), 1, 0),
        (73, 'social', '钉钉是否启用', 'SOCIAL_DINGTALK_ENABLED', 'false', 1, 1, NOW(), 1, 0),
-       (74, 'social', '支付宝公钥', 'SOCIAL_ALIPAY_PUBLIC_KEY', '', 1, 1, NOW(), 1, 0);
+       (74, 'social', '支付宝公钥', 'SOCIAL_ALIPAY_PUBLIC_KEY', '', 1, 1, NOW(), 1, 0),
+       -- 敏感词库：@SensitiveWordFilter 的词源（见 cn.ypbin.admin.system.provider.DbSensitiveWordProvider）。
+       -- 多个词用英文/中文逗号、分号或换行分隔；词库在应用启动期读取一次，改完需重启服务才生效。
+       -- 默认留空：此时启动日志会 WARN 提示「过滤不会命中任何词」，请按实际内容治理要求填写。
+       (80, 'content', '敏感词库', 'SENSITIVE_WORDS', '', 1, 1, NOW(), 1, 0);
 
 -- =============================================================
 -- 菜单树（platform_only=1 为平台专用菜单；0 为租户可见）
