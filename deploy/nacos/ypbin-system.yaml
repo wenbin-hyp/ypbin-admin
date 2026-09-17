@@ -42,6 +42,12 @@ ypbin:
     feign:
       trusted-source-token: ${GATEWAY_SIGN_TOKEN}
       require-trusted-source: true
+  # 数据权限：宿主实现见 cn.ypbin.admin.system.provider.AdminDataScopeHandler。
+  # 只治理 sys_user 一张表（其余表无 dept_id 列，由处理器返回 null 放行）；
+  # 语义＝平台超管（PLATFORM + PLATFORM_SUPER 角色）不受限；其余按角色 data_scope 取并集
+  # （1 全部不加条件、2 本部门及以下含部门树后代、3 本部门、4 仅本人、5 自定义=角色绑定部门+其后代）；
+  # 无身份头/无角色/解析为空时「拒绝全部」（id = -1）并记日志，不放行全量。
+  # 租户隔离由 ypbin.tenant 拦截器独立施加，本处理器不拼 tenant_id。
   data-permission:
     enabled: true
   # ---------- 操作日志（ypbin-starter-log）----------

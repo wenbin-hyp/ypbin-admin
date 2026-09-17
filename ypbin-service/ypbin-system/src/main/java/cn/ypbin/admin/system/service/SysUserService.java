@@ -10,6 +10,7 @@
 package cn.ypbin.admin.system.service;
 
 import cn.ypbin.admin.system.entity.SysUser;
+import cn.ypbin.admin.system.model.query.OnlineUserQuery;
 import cn.ypbin.admin.system.model.query.UserQuery;
 import cn.ypbin.admin.system.model.req.UserSaveReq;
 import cn.ypbin.admin.system.model.resp.OnlineUserResp;
@@ -63,5 +64,15 @@ public interface SysUserService extends BaseService<SysUser> {
 
     UserImportResult importUsers(MultipartFile file);
 
-    List<OnlineUserResp> listOnlineUsers(String keyword);
+    /**
+     * 分页查询在线用户。
+     *
+     * <p><strong>内存分页</strong>：在线用户来自会话存储（sa-token 会话），不是数据库，无法下推分页条件，
+     * 故先枚举全部在线会话再在服务内切片。分页只减少传输量与渲染量，<strong>不减少</strong>会话枚举与
+     * 逐个读取会话的开销（代价为 O(在线会话数) 次会话读取）。关键字过滤语义不变（登录账号/昵称模糊匹配）。</p>
+     *
+     * @param query 分页与关键字条件
+     * @return 分页结果；页码越界时 {@code items} 为空列表，{@code total} 仍为真实总数
+     */
+    PageResult<OnlineUserResp> pageOnlineUsers(OnlineUserQuery query);
 }

@@ -35,6 +35,21 @@
   两个类）。⚠️ **合并前须等 starter 3.4.0 正式发布**：本仓 CI 有「starter 版本必须等于最新 GitHub Release」
   校验，SNAPSHOT 会直接失败；发布后由 `sync-starter-version` 工作流改写为发布版号。
   本地开发需先 `mvn -Dmaven.test.skip=true install` 安装 starter 3.4.0-SNAPSHOT。
+- **数据范围处理器 `AdminDataScopeHandler`（starter 端口 `DataScopeHandler` 的宿主实现）**。
+  此前宿主未实现该端口（实现数为 0），9 处 `@DataPermission` 全为空转——查询与写操作的 UPDATE/DELETE
+  都不加任何数据范围条件。现按 `sys_role.data_scope` 计算 SQL 片段：平台超管（`PLATFORM` +
+  `PLATFORM_SUPER` 角色）不受限；否则取各角色数据范围并集（1 全部⇒不加条件、2 本部门及以下⇒本部门+
+  部门树后代、3 本部门、4 仅本人⇒`id = 当前用户`、5 自定义⇒角色绑定部门+其后代），部门条件与本人
+  条件以 `OR` 组合；取不到身份头/无有效角色/解析结果为空时**拒绝全部**（`id = -1`）并记日志，
+  不放行全量。只治理 `sys_user` 表（其余表无 `dept_id` 列，返回 null 放行）；租户隔离仍由 tenant
+  拦截器独立施加，不拼 `tenant_id`；角色-部门关联走批量 IN（判空短路），解析自身的查询用线程内标记防递归。
+- **敏感词词库提供者 `DbSensitiveWordProvider`（starter 端口 `SensitiveWordProvider` 的宿主实现）**。
+  词库取自系统参数 `sys_config.SENSITIVE_WORDS`（逗号/分号/换行分隔），复用既有参数表与「系统参数」
+  维护界面，不新建词表；词库为空时本类自行记 WARN（starter 只在「无 Provider 且配置项为空」时告警，
+  宿主提供 Provider 后该告警不再触发，必须由实现把「过滤等同无操作」说出来）；读取失败带堆栈抛错，
+  绝不降级为空词库。种子数据已补该参数行（`deploy/sql/002-data.sql`，默认留空待填）。
+  **词库在启动期读取一次，改动后需重启生效**（starter 的契约如此，`SensitiveWordService#reload`
+  本仓尚未接入）。
 - **权限数据源（starter 端口 `PermissionProvider`）三处宿主实现，注解鉴权具备开启条件**
   （`ypbin-system` / `ypbin-ai` / `ypbin-auth`）。此前宿主均未实现该端口，框架装配的是「返回空列表」的
   （`ypbin-system` / `ypbin-ai` / `ypbin-auth`）。此前宿主均未实现该端口，框架装配的是「返回空列表」的
@@ -64,6 +79,16 @@
   测试：`UserAccountSupportTest`（同租户内跨部门重名同样报「用户名已存在」、执行时断言租户过滤已关且退出后复位、
   编辑排除自身）、`SysUserMapperInterceptorIgnoreTest`（走真实 Mapper 解析路径断言 MP 判据为真，
   并以未标注语句/不存在语句反向证明判据非永真）。
+- **操作日志 `sys_log.clientId/clientType/authType` 不再恒为空**：新增 `SessionLogClientProvider`
+  （`ypbin-common`，由 `RemoteLogAutoConfiguration` 装配，带 `@ConditionalOnMissingBean` 可被宿主覆盖），
+  从登录会话中的 `LoginUser` 读这三个值——gateway 身份头只有 id/username/tenantId/deptId/roles，
+  **不新增任何请求头契约**，而是复用 auth 登录时写入、三服务共享同一 Redis 会话存储的登录态。
+  读会话失败时记 error 且让本条日志照常落库（仅三列为空），不因三个附加字段丢掉整条审计记录。
+- **在线用户接口改为统一分页响应**：`GET /online-user/list` 由 `R<List<OnlineUserResp>>` 改为
+  `R<PageResult<OnlineUserResp>>`（新增 `OnlineUserQuery extends PageQuery`，`keyword` 语义不变）。
+  在线用户来自会话存储而非数据库，属**内存分页**：先枚举全部在线会话再切片，分页只减少传输量，
+  不减少会话读取开销（O(在线会话数)）；页码越界时 `items` 为空而 `total` 仍为真实总数；
+  非法页码/每页条数显式报错，不做静默纠正。
 - **角色授权变更时的权限缓存清理由「逐用户一次缓存往返」改为批量一次删除**
   （`ypbin-system-api`：`SysCache.evictUserAuth(Collection<Long>)`）。用户权限缓存是永久缓存
   （TTL 传 `null`），一致性完全依赖写路径主动失效；受影响用户多时原实现按用户逐个 `DEL`，
@@ -91,3 +116,19 @@
   没有对应行、无法在界面授权 ⇒ 直接补注解会让**所有非超管用户部署即无法绑定/解绑第三方账号**，
   与「本 PR 对现网零影响」冲突。安全落地顺序（先补菜单行与授权、再加注解）与「维持仅需登录
   （与 `UserProfileController` 的自作用域既有约定一致）」两条路已写进上述文档，待明确选一条。
+
+### 待决策与未处理（本轮盘点发现，未动手）
+
+- **`updateUser` 的用户名查重落在数据范围内**：`checkUsernameUnique` 的 `exists()` 查询在
+  `@DataPermission` 作用域内执行，会带上部门条件 ⇒ 与「本部门之外已有同名用户」的重名检测不到，
+  最终由 `sys_user.uk_username` 抛原始 SQL 错误（是显式失败，不是静默放行，但错误信息不友好）。
+  建议把查重移到数据范围之外（独立 Bean，或 `@DataPermission(ignore = true)` 的方法），需先确认再改。
+- **`dept_id IS NULL` 的用户对「部门范围」操作者不可见**：`dept_id IN (...)` 不匹配 NULL，
+  这是数据范围语义的自然结果（与同类框架一致）。是否要 OR 出 `dept_id IS NULL`（放宽可见性）属产品决策。
+- **`exportUsers` 双重注解**：`SysUserServiceImpl.exportUsers` 与 `UserExcelComponent.exportUsers`
+  都标了 `@DataPermission`（跨 Bean 调用，切面各生效一次）。嵌套计数正确、无副作用，可择机去掉一处。
+- **敏感词词库热更新未接**：改 `sys_config.SENSITIVE_WORDS` 需重启才生效（starter 装配期只取一次词）。
+  若要即时生效，应在配置变更事件里调用 `SensitiveWordService#reload`（需处理 `enabled=false` 时 Bean 缺失）。
+- **数据范围解析未加缓存**：每次回调 2～4 次查询（超管判定 + 角色 + 按需部门树/角色-部门）。
+  缓存的失效点分散（角色、部门、用户角色变更），遗漏即越权，故本轮优先正确性；降本应作为独立改动评估。
+- **在线用户分页仍是内存分页**：在线规模达到万级时应改为在会话侧维护可分页索引。

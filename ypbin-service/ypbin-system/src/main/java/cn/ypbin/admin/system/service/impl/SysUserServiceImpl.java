@@ -24,6 +24,7 @@ import cn.ypbin.admin.system.mapper.SysUserMapper;
 import cn.ypbin.admin.system.mapper.SysUserPostMapper;
 import cn.ypbin.admin.system.mapper.SysUserRoleMapper;
 import cn.ypbin.admin.system.mapper.SysUserSocialMapper;
+import cn.ypbin.admin.system.model.query.OnlineUserQuery;
 import cn.ypbin.admin.system.model.query.UserQuery;
 import cn.ypbin.admin.system.model.req.UserSaveReq;
 import cn.ypbin.admin.system.model.resp.OnlineUserResp;
@@ -412,22 +413,50 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
         return userExcelComponent.importUsers(file);
     }
 
+    /**
+     * 分页查询在线用户（<strong>内存分页</strong>）。
+     *
+     * <p>在线用户来自 sa-token 会话存储而非数据库：会话枚举接口只提供「按关键字全量列出」，
+     * 没有可下推的 SQL 分页条件，因此这里先取全量再切片。代价是每页请求都要枚举并逐个读取全部
+     * 在线会话（O(在线会话数) 次会话读取，与页码/每页条数无关）；分页收益只在传输量与渲染量。
+     * 在线规模的量级是「当前登录会话数」，与该代价相称；若日后在线数达到万级，应改为在会话侧
+     * 维护可分页索引，而不是继续放大这里的切片。</p>
+     *
+     * @param query 分页与关键字条件
+     * @return 分页结果；页码越界时 {@code items} 为空列表而 {@code total} 仍为真实总数
+     */
     @Override
-    public List<OnlineUserResp> listOnlineUsers(String keyword) {
-        List<OnlineUser> users = StringUtils.hasText(keyword)
-            ? onlineUserService.list(keyword)
-            : onlineUserService.list();
-        if (users.isEmpty()) {
-            return List.of();
+    public PageResult<OnlineUserResp> pageOnlineUsers(OnlineUserQuery query) {
+        long page = query.getPage();
+        long pageSize = query.getPageSize();
+        if (page < 1 || pageSize < 1) {
+            throw new BusinessException("页码与每页条数必须大于 0");
         }
-        List<Long> ids = users.stream().map(OnlineUser::getUserId).filter(Objects::nonNull).distinct().toList();
+        List<OnlineUser> users = StringUtils.hasText(query.getKeyword())
+            ? onlineUserService.list(query.getKeyword())
+            : onlineUserService.list();
+        long total = users.size();
+        // 先算页边界再取数据：越界页直接返回空列表，不做任何多余的会话补充查询
+        long fromIndex = (page - 1) * pageSize;
+        List<OnlineUser> pageUsers = fromIndex >= total ? List.of()
+            : users.subList((int) fromIndex, (int) Math.min(fromIndex + pageSize, total));
+        if (pageUsers.isEmpty()) {
+            return PageResult.of(List.of(), total, page, pageSize);
+        }
+        List<Long> ids = pageUsers.stream()
+            .map(OnlineUser::getUserId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        // 批量 IN 前判空短路，避免空集合进 SQL
         Map<Long, String> realNameById = ids.isEmpty() ? Map.of()
             : listByIds(ids).stream().collect(Collectors.toMap(SysUser::getId, SysUser::getRealName, (a, b) -> a));
-        return users.stream().map(u -> {
+        List<OnlineUserResp> items = pageUsers.stream().map(u -> {
             OnlineUserResp r = new OnlineUserResp();
             BeanUtils.copyProperties(u, r);
             r.setRealName(realNameById.get(u.getUserId()));
             return r;
         }).toList();
+        return PageResult.of(items, total, page, pageSize);
     }
 }
