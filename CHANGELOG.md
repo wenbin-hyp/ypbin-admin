@@ -30,11 +30,11 @@
     无循环查询、无批量。
   - 测试：`AdminAiUsageListenerTest`（成功/失败/取消各自落库；token 为 null **不得写成 0**；
     落库失败不影响主流程且带堆栈留痕；会话补齐/同线程上下文/未知租户三种解析路径；超长原因按列宽截断）。
-- **starter 依赖版本升至 `3.4.0-SNAPSHOT`**（`pom.xml`）。新契约（可空 token + `AiUsageOutcome`）
+- **starter 依赖版本升至 `3.4.0`**（`pom.xml`）。新契约（可空 token + `AiUsageOutcome`）
   只存在于 starter 未发布的 3.4.0 线（3.3.0 的 `ypbin-starter-ai` 只有 `AiUsageInfo`/`AiUsageListener`
   两个类）。⚠️ **合并前须等 starter 3.4.0 正式发布**：本仓 CI 有「starter 版本必须等于最新 GitHub Release」
   校验，SNAPSHOT 会直接失败；发布后由 `sync-starter-version` 工作流改写为发布版号。
-  本地开发需先 `mvn -Dmaven.test.skip=true install` 安装 starter 3.4.0-SNAPSHOT。
+  本地开发需先 `mvn -Dmaven.test.skip=true install` 安装 starter 3.4.0。
 - **数据范围处理器 `AdminDataScopeHandler`（starter 端口 `DataScopeHandler` 的宿主实现）**。
   此前宿主未实现该端口（实现数为 0），9 处 `@DataPermission` 全为空转——查询与写操作的 UPDATE/DELETE
   都不加任何数据范围条件。现按 `sys_role.data_scope` 计算 SQL 片段：平台超管（`PLATFORM` +
@@ -67,7 +67,6 @@
 
 ### 修复
 
-- **用户名查重移出数据范围，跨部门重名改为友好业务错误**（`SysUserServiceImpl` / `UserAccountSupport` /
   `SysUserMapper`）。`uk_username` 是**不带 `tenant_id` 的全局唯一键**，而 `updateUser` 带
   `@DataPermission`（数据范围按部门过滤），原先的 `exists()` 查重落在该范围内 ⇒ **跨部门重名查不到** ⇒
   校验通过后由数据库唯一键抛原始 SQL 错误。现改走语句级跳过数据权限的
@@ -119,7 +118,6 @@
 
 ### 待决策与未处理（本轮盘点发现，未动手）
 
-- **`updateUser` 的用户名查重落在数据范围内**：`checkUsernameUnique` 的 `exists()` 查询在
   `@DataPermission` 作用域内执行，会带上部门条件 ⇒ 与「本部门之外已有同名用户」的重名检测不到，
   最终由 `sys_user.uk_username` 抛原始 SQL 错误（是显式失败，不是静默放行，但错误信息不友好）。
   建议把查重移到数据范围之外（独立 Bean，或 `@DataPermission(ignore = true)` 的方法），需先确认再改。
