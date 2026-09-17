@@ -30,8 +30,8 @@ import cn.ypbin.admin.system.model.req.UserSaveReq;
 import cn.ypbin.admin.system.model.resp.OnlineUserResp;
 import cn.ypbin.admin.system.model.resp.UserResp;
 import cn.ypbin.admin.system.model.vo.UserImportResult;
-import cn.ypbin.admin.system.provider.AdminDataScopeHandler;
 import cn.ypbin.admin.system.service.SysUserService;
+import cn.ypbin.admin.system.service.support.DataScopeResolver;
 import cn.ypbin.admin.system.service.support.UserAccountSupport;
 import cn.ypbin.starter.cache.annotation.CacheEvict;
 import cn.ypbin.starter.core.exception.BusinessException;
@@ -81,12 +81,13 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
     private final UserExcelComponent userExcelComponent;
     private final UserAccountSupport accountSupport;
     /**
-     * 数据范围规则引擎（starter {@code DataScopeHandler} 端口的宿主实现）。
+     * 数据范围解析能力（{@code service/support} 层的业务接口，非 starter 端口的实现类）。
      *
      * <p>写路径必须显式校验 {@code deptId}，而「部门是否在范围内」的口径只能有一份实现，
-     * 故直接复用本仓既有的处理器，而不是在服务里重写一遍超管判定 + 角色/部门树解析。</p>
+     * 故复用与读路径同一个解析器，而不是在服务里重写一遍超管判定 + 角色/部门树解析；
+     * 这里只依赖能力接口，不依赖 {@code provider} 包中的端口适配器。</p>
      */
-    private final AdminDataScopeHandler dataScopeHandler;
+    private final DataScopeResolver dataScopeResolver;
 
     @Override
     public SysUser getByUsername(String username) {
@@ -352,16 +353,16 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
      * <p><b>为什么不能靠 {@code @DataPermission} 解决</b>：它只把范围条件拼进被标注方法内的 SQL，
      * 而 {@code deptId} 是请求入参、不经过任何查询——{@code createUser} 甚至没有 {@code @DataPermission}。
      * 于是部门范围管理员可以把自己范围内的用户改到别的部门、或直接建到别的部门。
-     * 这里调 {@code AdminDataScopeHandler#isDeptWithinScope}（与读路径同一套口径）显式判定。</p>
+     * 这里调 {@code DataScopeResolver#isDeptWithinScope}（与读路径同一套口径）显式判定。</p>
      *
      * <p>越界、以及「无部门」（读路径 {@code dept_id IN (...)} 匹配不到 NULL 行）一律显式抛业务错误，
-     * 不静默忽略、也不留给数据库层报错。校验过程中处理器自己的查询由其 {@code RESOLVING} 标记短路，
+     * 不静默忽略、也不留给数据库层报错。校验过程中解析器自己的查询由其 {@code RESOLVING} 标记短路，
      * 不会再次叠加数据范围、也不会递归。</p>
      *
      * @param deptId 目标部门 ID（可为 {@code null}）
      */
     private void validateDeptInScope(Long deptId) {
-        if (!dataScopeHandler.isDeptWithinScope(deptId)) {
+        if (!dataScopeResolver.isDeptWithinScope(deptId)) {
             throw new BusinessException("目标部门不在你的数据范围内，无权在该部门下新建或调整用户");
         }
     }
