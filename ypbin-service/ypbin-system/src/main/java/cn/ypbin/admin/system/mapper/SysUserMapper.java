@@ -93,4 +93,38 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
         + "</script>")
     long countByUsernameGlobal(@Param("username") String username, @Param("excludeId") Long excludeId);
 
+    /**
+     * 全局统计同手机号用户数（跨部门、跨租户），供手机号唯一性校验使用。
+     *
+     * <p><b>为什么与用户名查重是同一类问题</b>：{@code sys_user} 的手机号同样按
+     * <b>不带 tenant_id 的全局唯一</b>语义约束（删号时置空 {@code phone} 以释放占用，
+     * 见 {@code SysUserServiceImpl#deleteUser}），而新增/修改用户所在的调用链处于数据权限与
+     * 租户过滤作用域内（{@code updateUser} 方法上的 {@code @DataPermission} + 租户行拦截器）。
+     * 若用内置 {@code exists}/{@code selectCount} 查重，本部门之外的重号用户查不到，校验会「通过」，
+     * 最后由唯一键抛原始 SQL 错误——用户看到的是 SQL 报错而不是业务提示。</p>
+     *
+     * <p>两道过滤的关闭方式与 {@link #countByUsernameGlobal} 完全一致，缺一不可：</p>
+     * <ol>
+     *   <li><b>租户过滤</b>：由调用侧 {@code TenantContext.executeIgnore} 关闭（本仓既有写法），
+     *       不在本方法内声明。</li>
+     *   <li><b>数据权限</b>：属 MyBatis-Plus 拦截器级行为，{@code TenantContext} 管不到——
+     *       {@code DataPermissionContext} 只有进入/退出、没有「挂起」语义，且外层方法已激活上下文时，
+     *       内层方法上的 {@code @DataPermission(ignore = true)} 并不会让上下文失效（它只是自己不再进入）。
+     *       故这里用 {@code @InterceptorIgnore(dataPermission = "true")} 让本语句跳过数据权限拦截器。</li>
+     * </ol>
+     *
+     * <p><b>影响范围</b>：{@code @InterceptorIgnore} 只作用于本语句，不改变任何其它查询的数据范围；
+     * 本方法只返回行数，不返回任何用户数据，故不构成越权读取。</p>
+     *
+     * @param phone     手机号
+     * @param excludeId 需排除的用户 ID（编辑时传自身 ID，新增传 {@code null}）
+     * @return 匹配行数（{@code > 0} 即重号）
+     */
+    @InterceptorIgnore(dataPermission = "true")
+    @Select("<script>"
+        + "SELECT COUNT(1) FROM sys_user WHERE phone = #{phone} AND is_deleted = 0"
+        + "<if test='excludeId != null'> AND id != #{excludeId}</if>"
+        + "</script>")
+    long countByPhoneGlobal(@Param("phone") String phone, @Param("excludeId") Long excludeId);
+
 }

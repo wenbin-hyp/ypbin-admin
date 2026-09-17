@@ -33,12 +33,17 @@ import cn.ypbin.admin.system.mapper.SysRoleMapper;
 import cn.ypbin.admin.system.service.SysPermissionService;
 import cn.ypbin.starter.security.core.LoginUser;
 import cn.ypbin.starter.security.identity.IdentityContext;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
@@ -101,6 +106,41 @@ class AdminDataScopeHandlerTest {
         IdentityContext.clear();
 
         assertThat(handler.getDataScopeSql(MAPPED_STATEMENT, "sys_user")).isEqualTo("id = -1");
+    }
+
+    /**
+     * 缺陷 3 回归：报错给出的「修复指引」必须指向真正可行的机制。
+     *
+     * <p>原先建议的是 {@code @DataPermission(ignore = true)}，但该机制在「外层已激活数据权限」时
+     * <b>不生效</b>（{@code DataPermissionContext} 无挂起语义，切面命中 ignore 只是自己不再 enter），
+     * 用户照做后问题依旧。可行的是语句级 {@code @InterceptorIgnore(dataPermission = "true")}。
+     * 本用例直接捕获日志文本断言文案，改回旧文案即转红。</p>
+     */
+    @Test
+    @DisplayName("报错指引必须指向语句级 @InterceptorIgnore，不得再教用户用无效的 @DataPermission(ignore = true)")
+    void shouldAdviseWorkingMechanismWhenIdentityMissing() {
+        Logger handlerLogger = (Logger) LoggerFactory.getLogger(AdminDataScopeHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        handlerLogger.addAppender(appender);
+        try {
+            IdentityContext.clear();
+            handler.getDataScopeSql(MAPPED_STATEMENT, "sys_user");
+        } finally {
+            handlerLogger.detachAppender(appender);
+        }
+
+        String logged = appender.list.stream()
+            .map(ILoggingEvent::getFormattedMessage)
+            .collect(Collectors.joining("\n"));
+
+        assertThat(logged)
+            .as("必须给出可行的修复机制")
+            .contains("@InterceptorIgnore(dataPermission = \"true\")");
+        assertThat(logged)
+            .as("不得再建议在该场景无效的 @DataPermission(ignore = true)，并应说明它为何无效")
+            .doesNotContain("请在调用侧改用 @DataPermission(ignore = true)")
+            .contains("内层 @DataPermission(ignore = true) 不会生效");
     }
 
     @Test

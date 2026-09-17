@@ -34,6 +34,20 @@ public interface SysUserService extends BaseService<SysUser> {
 
     SysUser getByPhone(String phone);
 
+    /**
+     * 按 ID 取用户，<b>忽略租户过滤</b>，供内部端点跨租户定位用户。
+     *
+     * <p>刻意与继承自 {@code IService} 的 {@code getById} 区分：后者受租户行拦截器约束，
+     * 而本方法服务于登录、第三方回调、令牌校验等<b>尚无租户上下文</b>的路径——匿名链路没有网关
+     * 签发的 {@code X-Tenant-Id}，fail-closed（{@code ypbin.tenant.fail-on-missing-tenant=true}）下
+     * {@code getById} 会直接抛「缺少租户上下文」。不覆写 {@code getById} 是为了避免所有既有调用者
+     * 悄然失去租户隔离（那些调用点在正常请求上下文里依赖隔离）。</p>
+     *
+     * @param userId 用户 ID
+     * @return 用户；不存在返回 {@code null}
+     */
+    SysUser getByIdGlobal(Long userId);
+
     boolean verifyPassword(Long userId, String rawPassword);
 
     long countUsers();

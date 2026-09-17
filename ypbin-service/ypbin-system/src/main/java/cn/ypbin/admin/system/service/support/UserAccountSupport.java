@@ -15,7 +15,6 @@
  */
 package cn.ypbin.admin.system.service.support;
 
-import cn.ypbin.admin.system.entity.SysUser;
 import cn.ypbin.admin.system.entity.SysUserPasswordHistory;
 import cn.ypbin.admin.system.mapper.SysUserMapper;
 import cn.ypbin.admin.system.mapper.SysUserPasswordHistoryMapper;
@@ -89,16 +88,24 @@ public class UserAccountSupport {
     }
 
     /**
-     * 手机号全局唯一查重（手机号跨租户唯一，查重时忽略租户过滤）。
+     * 手机号全局唯一查重（手机号跨租户唯一）。
+     *
+     * <p>与用户名查重同源，<b>必须在数据范围之外查</b>：{@code updateUser} 带 {@code @DataPermission}，
+     * 若用内置 {@code exists} 查重，跨部门重号查不到，校验「通过」后由数据库唯一键抛原始 SQL 错误。
+     * 两道过滤分别由 {@code TenantContext.executeIgnore}（租户）与 Mapper 语句上的
+     * {@code @InterceptorIgnore(dataPermission = "true")}（数据权限）关闭——{@code TenantContext}
+     * 关不掉数据权限，详见 {@code SysUserMapper#countByPhoneGlobal}。</p>
+     *
+     * @param phone     手机号（可为 {@code null}，为 {@code null} 时不校验）
+     * @param excludeId 需排除的用户 ID（编辑时传自身 ID，新增传 {@code null}）
      */
     public void checkPhoneUnique(String phone, Long excludeId) {
         if (phone == null) {
             return;
         }
-        boolean exists = TenantContext.executeIgnore(() -> userMapper.exists(new LambdaQueryWrapper<SysUser>()
-            .eq(SysUser::getPhone, phone)
-            .ne(excludeId != null, SysUser::getId, excludeId)));
-        if (exists) {
+        long duplicated = TenantContext.executeIgnore(
+            () -> userMapper.countByPhoneGlobal(phone, excludeId));
+        if (duplicated > 0) {
             throw new BusinessException("手机号已存在：" + phone);
         }
     }

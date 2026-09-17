@@ -141,9 +141,23 @@ public class AdminDataScopeHandler implements DataScopeHandler {
         }
         Long userId = IdentityContext.getUserId().orElse(null);
         if (userId == null) {
+            // ⚠️ 修复指引必须指向「真正可行」的机制：此处**不能**建议 @DataPermission(ignore = true)。
+            // 原因：数据权限是否生效由 DataPermissionContext（线程内计数）决定，而它只有 enter/exit/isActive、
+            // **没有「挂起」语义**；DataPermissionAspect 命中 ignore=true 时只是自己不再 enter() 而直接
+            // point.proceed()。因此当**外层**已激活数据权限时，内层方法再标 @DataPermission(ignore = true)
+            // 并不能让上下文失效——本处理器依旧会被回调，用户照建议改完问题仍在，属误导。
+            // 真正可行的三条路（按代价从低到高）：
+            // ① 语句级 @InterceptorIgnore(dataPermission = "true")：只让**该条 SQL** 跳过数据权限拦截器
+            //    （MyBatis-Plus 的 DataPermissionInterceptor#beforeQuery/#beforePrepare 首行即判
+            //    InterceptorIgnoreHelper.willIgnoreDataPermission(ms.getId())），作用面最小，首选；
+            // ② 为免过滤场景单写一条**独立 Mapper 语句**并同样标注 @InterceptorIgnore，与业务查询隔离；
+            // ③ 干脆**不经 Mapper**（走缓存/专用客户端），从根上不进入数据权限拦截器链。
+            // 本仓既有范例：SysUserMapper#countByUsernameGlobal / #countByPhoneGlobal。
             log.error("数据范围解析失败：当前请求没有网关签发的身份头（取不到用户 ID），"
                 + "已按「拒绝全部」处理以免读到全量数据；若该路径本不应受数据权限约束，"
-                + "请在调用侧改用 @DataPermission(ignore = true)。mappedStatementId={}, table={}",
+                + "请在**该条查询所在的 Mapper 语句**上加 @InterceptorIgnore(dataPermission = \"true\")，"
+                + "或改用独立 Mapper 语句/不经 Mapper 的通道（注意：外层已激活数据权限时，"
+                + "内层 @DataPermission(ignore = true) 不会生效）。mappedStatementId={}, table={}",
                 mappedStatementId, tableName);
             return DENY_ALL;
         }

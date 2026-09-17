@@ -17,7 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * 用户名全局查重语句的数据权限放行机制测试。
+ * 用户名/手机号全局查重语句的数据权限放行机制测试。
  *
  * <p>「在数据范围之外查重」不能靠 {@code TenantContext.executeIgnore} 实现——那只关租户过滤。
  * 数据权限是 MyBatis-Plus 拦截器级行为（{@code DataPermissionContext} 只有进入/退出、无挂起语义，
@@ -42,6 +42,9 @@ class SysUserMapperInterceptorIgnoreTest {
     private static final String GLOBAL_COUNT_STATEMENT =
         SysUserMapper.class.getName() + ".countByUsernameGlobal";
 
+    private static final String GLOBAL_PHONE_COUNT_STATEMENT =
+        SysUserMapper.class.getName() + ".countByPhoneGlobal";
+
     private static final String PLAIN_STATEMENT = SysUserMapper.class.getName() + ".insertBatch";
 
     private static void parseMapper() {
@@ -56,6 +59,16 @@ class SysUserMapperInterceptorIgnoreTest {
 
         assertThat(InterceptorIgnoreHelper.willIgnoreDataPermission(GLOBAL_COUNT_STATEMENT))
             .as("该语句未跳过数据权限 ⇒ 查重仍落在部门范围内，跨部门重名会漏检并抛原始 SQL 错误")
+            .isTrue();
+    }
+
+    @Test
+    @DisplayName("手机号全局查重语句必须跳过数据权限拦截器（跨部门重号才查得到）")
+    void globalPhoneCountShouldSkipDataPermission() {
+        parseMapper();
+
+        assertThat(InterceptorIgnoreHelper.willIgnoreDataPermission(GLOBAL_PHONE_COUNT_STATEMENT))
+            .as("该语句未跳过数据权限 ⇒ 手机号查重仍落在部门范围内，跨部门重号会漏检并抛原始 SQL 错误")
             .isTrue();
     }
 
