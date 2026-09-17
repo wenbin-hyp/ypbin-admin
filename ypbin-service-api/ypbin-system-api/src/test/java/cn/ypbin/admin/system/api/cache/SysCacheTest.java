@@ -24,6 +24,7 @@ import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.core.model.R;
 import cn.ypbin.starter.core.util.SpringUtils;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -132,6 +133,33 @@ class SysCacheTest {
             SysCache.evictUserAuth(42L);
 
             cacheUtils.verify(() -> CacheUtils.delete(List.of("sys:role:user:42", "sys:perm:user:42")));
+        }
+    }
+
+    @Test
+    void evictUserAuthBulkShouldDeleteAllKeysInOneCall() {
+        try (MockedStatic<CacheUtils> cacheUtils = mockStatic(CacheUtils.class)) {
+            cacheUtils.when(() -> CacheUtils.delete(any(java.util.Collection.class))).thenReturn(4L);
+
+            // 角色授权变更后受影响用户可能很多：合并键只删一次，避免按用户逐个缓存往返
+            SysCache.evictUserAuth(List.of(7L, 8L));
+
+            cacheUtils.verify(() -> CacheUtils.delete(List.of(
+                "sys:role:user:7", "sys:perm:user:7", "sys:role:user:8", "sys:perm:user:8")));
+        }
+    }
+
+    @Test
+    void evictUserAuthBulkShouldShortCircuitOnEmptyAndSkipNullElements() {
+        try (MockedStatic<CacheUtils> cacheUtils = mockStatic(CacheUtils.class)) {
+            cacheUtils.when(() -> CacheUtils.delete(any(java.util.Collection.class))).thenReturn(2L);
+
+            SysCache.evictUserAuth(List.of());
+            cacheUtils.verifyNoInteractions();
+
+            // 关联行里出现 null userId 时跳过该元素，其余照常清理
+            SysCache.evictUserAuth(Arrays.asList(7L, null));
+            cacheUtils.verify(() -> CacheUtils.delete(List.of("sys:role:user:7", "sys:perm:user:7")));
         }
     }
 

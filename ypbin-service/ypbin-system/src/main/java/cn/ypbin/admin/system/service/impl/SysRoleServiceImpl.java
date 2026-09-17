@@ -197,13 +197,19 @@ public class SysRoleServiceImpl extends BaseServiceImpl<SysRoleMapper, SysRole> 
 
     /**
      * 角色权限/状态变更后，清除拥有该角色的所有用户的权限缓存（权限码可能已变）。
+     *
+     * <p>按角色反查用户是精确失效：只清受影响的 {@code sys:role:user:*}、{@code sys:perm:user:*}，
+     * 不做整体清除（整体清会让所有在线用户的鉴权在下一请求回源 system，代价与影响面都更大）。
+     * 受影响的用户可能很多，故合并键后一次性删除，避免逐个用户一次缓存往返。</p>
      */
     private void evictRoleUsersCache(Long roleId) {
         List<SysUserRole> relations = userRoleMapper.selectList(
             new LambdaQueryWrapper<SysUserRole>().eq(SysUserRole::getRoleId, roleId));
-        for (SysUserRole relation : relations) {
-            SysCache.evictUserAuth(relation.getUserId());
+        if (relations.isEmpty()) {
+            return;
         }
+        List<Long> userIds = relations.stream().map(SysUserRole::getUserId).distinct().toList();
+        SysCache.evictUserAuth(userIds);
     }
 
     private void checkReservedCode(String code) {
