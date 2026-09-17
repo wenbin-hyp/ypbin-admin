@@ -258,6 +258,70 @@ class AdminDataScopeHandlerTest {
         assertThat(handler.getDataScopeSql(MAPPED_STATEMENT, "sys_user")).isEqualTo("dept_id IN (10)");
     }
 
+    @Test
+    @DisplayName("写路径：部门范围管理员的可见部门可写、他部门不可写（与读路径 dept_id IN (...) 同口径）")
+    void shouldValidateWriteTargetDeptAgainstScope() {
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of(role(1L, 3, 10L)));
+
+        assertThat(handler.isDeptWithinScope(10L))
+            .as("本部门在数据范围内，写路径必须放行")
+            .isTrue();
+        assertThat(handler.isDeptWithinScope(99L))
+            .as("他部门不在数据范围内，写路径必须拒绝（否则可把用户建/改到任意部门）")
+            .isFalse();
+    }
+
+    @Test
+    @DisplayName("写路径：平台超级管理员不受数据范围限制")
+    void shouldLetPlatformSuperAdminWriteAnyDept() {
+        when(permissionService.isSuperAdmin(CURRENT_USER_ID)).thenReturn(true);
+
+        assertThat(handler.isDeptWithinScope(99L)).isTrue();
+        // 超管判定后即返回，不应再查角色
+        verify(roleMapper, never()).selectByUserId(any());
+    }
+
+    @Test
+    @DisplayName("写路径：任一角色为「全部数据」时不限部门；「本部门及以下」展开后代部门")
+    void shouldExpandDeptTreeForWriteValidation() {
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of(role(1L, 2, 10L)));
+        givenDeptTree(dept(10L, 0L), dept(11L, 10L), dept(111L, 11L), dept(20L, 0L));
+
+        assertThat(handler.isDeptWithinScope(111L))
+            .as("「本部门及以下」必须展开部门树后代，与读路径的 dept_id IN (10,11,111) 一致")
+            .isTrue();
+        assertThat(handler.isDeptWithinScope(20L)).isFalse();
+
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of(role(1L, 1, 10L)));
+        assertThat(handler.isDeptWithinScope(20L))
+            .as("「全部数据」角色不受任何部门限制")
+            .isTrue();
+    }
+
+    @Test
+    @DisplayName("写路径 fail-closed：无身份头 / 无部门 / 无角色时一律拒绝，不放行全量")
+    void shouldFailClosedForWriteValidation() {
+        // ① 取不到网关身份头
+        IdentityContext.clear();
+        assertThat(handler.isDeptWithinScope(10L)).isFalse();
+
+        // ② 有身份但没有部门（读路径 dept_id IN (...) 也匹配不到）
+        login(CURRENT_USER_ID, null);
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of(role(1L, 2, null)));
+        assertThat(handler.isDeptWithinScope(10L)).isFalse();
+
+        // ③ 无有效角色
+        login(CURRENT_USER_ID, 10L);
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of());
+        assertThat(handler.isDeptWithinScope(10L)).isFalse();
+
+        // ④ 目标部门为空（不设部门）⇒ 不在任何部门范围内，拒绝
+        when(roleMapper.selectByUserId(CURRENT_USER_ID)).thenReturn(List.of(role(1L, 3, 10L)));
+        assertThat(handler.isDeptWithinScope(null))
+            .as("deptId 为空时写进去的用户在部门范围角色下永远读不到，必须拒绝")
+            .isFalse();
+    }
+
     private void login(Long userId, Long deptId) {
         LoginUser loginUser = new LoginUser(userId, "tester");
         loginUser.setDeptId(deptId);

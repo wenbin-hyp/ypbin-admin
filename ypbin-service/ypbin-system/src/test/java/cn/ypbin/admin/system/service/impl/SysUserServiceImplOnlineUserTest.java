@@ -18,6 +18,7 @@ package cn.ypbin.admin.system.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -33,12 +34,15 @@ import cn.ypbin.admin.system.mapper.SysUserRoleMapper;
 import cn.ypbin.admin.system.mapper.SysUserSocialMapper;
 import cn.ypbin.admin.system.model.query.OnlineUserQuery;
 import cn.ypbin.admin.system.model.resp.OnlineUserResp;
+import cn.ypbin.admin.system.provider.AdminDataScopeHandler;
 import cn.ypbin.admin.system.service.support.UserAccountSupport;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.crud.model.PageResult;
 import cn.ypbin.starter.security.online.OnlineUser;
 import cn.ypbin.starter.security.online.OnlineUserService;
+import cn.ypbin.starter.tenant.core.TenantContext;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,6 +60,9 @@ import org.junit.jupiter.api.Test;
  */
 class SysUserServiceImplOnlineUserTest {
 
+    /** 与他租户用户区分用的租户 ID（断言姓名回填不受当前租户限制） */
+    private static final Long OTHER_TENANT_ID = 999L;
+
     private OnlineUserService onlineUserService;
 
     private SysUserServiceImpl userService;
@@ -71,7 +78,8 @@ class SysUserServiceImplOnlineUserTest {
             mock(SysPostMapper.class),
             onlineUserService,
             mock(UserExcelComponent.class),
-            mock(UserAccountSupport.class)));
+            mock(UserAccountSupport.class),
+            mock(AdminDataScopeHandler.class)));
         // 真实姓名补充来自基类 listByIds（批量 IN），测试里替换为可控数据
         doReturn(List.of()).when(userService).listByIds(anyList());
     }
@@ -149,6 +157,49 @@ class SysUserServiceImplOnlineUserTest {
             .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> userService.pageOnlineUsers(query(1, 0, null)))
             .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("他租户的在线用户同样要回填姓名（会话跨租户 + @PlatformAccess 平台级语义 ⇒ 回填必须全局）")
+    void shouldFillRealNameForOnlineUserFromAnotherTenant() {
+        OnlineUser otherTenantUser = online(9L, "other-tenant-user");
+        otherTenantUser.setTenantId(OTHER_TENANT_ID);
+        when(onlineUserService.list()).thenReturn(List.of(otherTenantUser));
+        AtomicBoolean ignoredDuringLookup = new AtomicBoolean(false);
+        doAnswer(invocation -> {
+            ignoredDuringLookup.set(TenantContext.isIgnored());
+            return List.of(user(9L, "李四"));
+        }).when(userService).listByIds(List.of(9L));
+
+        PageResult<OnlineUserResp> result = userService.pageOnlineUsers(query(1, 10, null));
+
+        assertThat(result.getItems()).hasSize(1);
+        assertThat(result.getItems().get(0).getUsername()).isEqualTo("other-tenant-user");
+        assertThat(result.getItems().get(0).getRealName())
+            .as("他租户用户的姓名必须同样回填，否则平台管理员看到的在线列表里这部分姓名恒为空")
+            .isEqualTo("李四");
+        assertThat(ignoredDuringLookup)
+            .as("姓名批量查询必须脱离租户过滤（sys_user 不在 ignore-tables，否则他租户行被 tenant_id 条件滤掉）")
+            .isTrue();
+        assertThat(TenantContext.isIgnored())
+            .as("executeIgnore 退出后必须恢复，不能把忽略状态泄漏给同一请求的后续查询")
+            .isFalse();
+    }
+
+    @Test
+    @DisplayName("反向证明：本租户回填同样走忽略作用域，且查询失败不吞异常")
+    void shouldNotSwallowBackfillFailure() {
+        when(onlineUserService.list()).thenReturn(List.of(online(1L, "u1")));
+        doAnswer(invocation -> {
+            throw new IllegalStateException("db down");
+        }).when(userService).listByIds(anyList());
+
+        assertThatThrownBy(() -> userService.pageOnlineUsers(query(1, 10, null)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("db down");
+        assertThat(TenantContext.isIgnored())
+            .as("异常路径也必须退出忽略作用域")
+            .isFalse();
     }
 
     private OnlineUserQuery query(long page, long pageSize, String keyword) {
