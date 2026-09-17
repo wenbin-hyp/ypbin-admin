@@ -54,6 +54,20 @@ public interface ISystemClient {
     R<List<String>> listRoleCodes(@RequestParam("userId") Long userId);
 
     /**
+     * 判定用户是否为平台用户（{@code PLATFORM} 类型、启用且未逻辑删除）。
+     *
+     * <p>供各服务实现 starter 的 {@code PlatformUserChecker} 端口用：{@code @PlatformAccess}
+     * 标注的资源在宿主未提供判定器时一律拒绝（fail-closed），而调用方服务禁止直连共享库，
+     * 故判定口径只有 system 一份实现（{@code SysPermissionServiceImpl}），调用方经本端点复用，
+     * 避免同一规则在多服务里各写一遍而产生漂移。</p>
+     *
+     * <p>失败语义：system 不可达时走 {@link ISystemClientFallback} 返回失败 {@code R}，
+     * 调用方必须据 {@code R.success}/{@code R.code} 判定并上抛异常（禁止静默当作「非平台用户」）。</p>
+     */
+    @GetMapping("/platform-user")
+    R<Boolean> isPlatformUser(@RequestParam("userId") Long userId);
+
+    /**
      * 查询用户可访问的路由树（登录后动态菜单）。
      */
     @GetMapping("/routes")
