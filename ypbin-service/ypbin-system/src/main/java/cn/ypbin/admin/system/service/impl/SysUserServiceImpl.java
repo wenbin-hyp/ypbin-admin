@@ -158,7 +158,7 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(keys = {"'sys:user:username:' + #req.username"})
     public void createUser(UserSaveReq req) {
-        checkUsernameUnique(req.getUsername(), null);
+        accountSupport.checkUsernameUnique(req.getUsername(), null);
         String phone = accountSupport.normalizePhone(req.getPhone());
         accountSupport.checkPhoneUnique(phone, null);
         if (!StringUtils.hasText(req.getPassword())) {
@@ -189,7 +189,7 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
     @CacheEvict(keys = {"'sys:user:id:' + #id", "'sys:user:username:' + #req.username"})
     public void updateUser(Long id, UserSaveReq req) {
         SysUser existing = getManageableUser(id);
-        checkUsernameUnique(req.getUsername(), id);
+        accountSupport.checkUsernameUnique(req.getUsername(), id);
         String phone = accountSupport.normalizePhone(req.getPhone());
         accountSupport.checkPhoneUnique(phone, id);
         validateAssignments(existing, req.getRoleIds(), req.getPostIds());
@@ -318,15 +318,6 @@ public class SysUserServiceImpl extends BaseServiceImpl<SysUserMapper, SysUser> 
         validateAssignments(user, roleIds, null);
         userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>().eq(SysUserRole::getUserId, id));
         assignRolesInternal(id, roleIds);
-    }
-
-    private void checkUsernameUnique(String username, Long excludeId) {
-        boolean exists = exists(new LambdaQueryWrapper<SysUser>()
-            .eq(SysUser::getUsername, username)
-            .ne(excludeId != null, SysUser::getId, excludeId));
-        if (exists) {
-            throw new BusinessException("用户名已存在：" + username);
-        }
     }
 
     private void validateAssignments(SysUser user, List<Long> roleIds, List<Long> postIds) {
