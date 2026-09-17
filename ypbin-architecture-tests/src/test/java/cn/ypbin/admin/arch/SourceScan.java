@@ -48,12 +48,18 @@ final class SourceScan {
     static final String GATE_MODULE = "ypbin-architecture-tests";
 
     /**
-     * 已知兄弟仓库的目录名：出现在本仓内部时一律不扫。
+     * 已知兄弟仓库的目录名（<b>本清单只为少走目录、加速遍历</b>）。
      *
-     * <p>CI 的 starter 检出目录名为 {@code ypbin-starter}；其余同名目录一并登记，避免同类问题换名字复现。</p>
+     * <p><b>通用兜底判据是与名字无关的「目录内含 {@code .git}」</b>（见 {@link #sourcesIn}）——
+     * 名字陌生或改名后的检出目录靠它拦住；因此本清单漏项不会造成误扫。</p>
+     *
+     * <p>⛔ <b>新增条目必须先在母仓目录实测存在</b>（2026-09-16 实测母仓只有
+     * {@code ypbin-starter} / {@code ypbin-site} / {@code ypbin-admin-ui} / {@code ypbin-iot-starter} 四个兄弟仓）。
+     * 之前这里写过 {@code ypbin-iot}、{@code ypbin-license-demo} 两个<b>并不存在</b>的名字
+     * （凭记忆猜的），会误导后来者以为它们被核实过——已删除。</p>
      */
     private static final Set<String> NESTED_REPO_DIRS =
-        Set.of("ypbin-starter", "ypbin-site", "ypbin-admin-ui", "ypbin-license-demo", "ypbin-iot");
+        Set.of("ypbin-starter", "ypbin-site", "ypbin-admin-ui", "ypbin-iot-starter");
 
     /** 遍历时直接跳过的目录名（构建产物/依赖装目录，纯性能考虑） */
     private static final Set<String> SKIPPED_DIRS = Set.of("target", "node_modules", ".git", ".flattened");
