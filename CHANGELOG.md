@@ -98,6 +98,54 @@
   只清受影响用户的 `sys:role:user:*` / `sys:perm:user:*`，不做整体清）。
   新增回归测试：`SysRoleServiceImplPermissionCacheTest`（改角色勾选菜单/改角色状态后必须清掉该角色下
   **全部**去重用户的缓存；角色下无人时不得发起删除）、`SysCacheTest` 的批量与短路用例。
+- **内部端点 `GET /internal/user-by-id` 补齐租户忽略，第三方登录不再必然失败**
+  （`SystemClientImpl` / `SysUserService` / `SysUserServiceImpl`）：`/auth/social/callback/**` 在网关
+  白名单内、匿名链路没有网关签发的 `X-Tenant-Id`（`SaTokenGatewayAuthProvider` 仅在登录后签发），
+  而 `sys_user` **不在** `ypbin.tenant.ignore-tables` 且 `fail-on-missing-tenant=true`（fail-closed）
+  ⇒ 该端点原先调用继承自 `IService` 的 `getById`，必然抛「缺少租户上下文」，**第三方回调登录直接失败**。
+  现新增 `SysUserService#getByIdGlobal`（内部 `TenantContext.executeIgnore`，与同链路 6 个兄弟方法
+  `getByUsername`/`getByPhone`/`verifyPassword`/`countUsers`/`searchUsers`/`updateLastLoginTime` 同口径）
+  并由端点委派；**刻意不覆写 `getById`**，否则所有既有调用者会悄然失去租户隔离。
+  同文件其余端点已逐一核对：其余 6 个走已在 service 内忽略租户的方法，`sys_config`/`sys_log`/
+  `sys_user_social`/`sys_track_event*` 相关端点命中的都是 `ignore-tables` 表，**无第二处漏项**。
+  测试：`SystemClientImplUserByIdTest`（必须委派 `getByIdGlobal`，并反向禁止走 `getById`）、
+  `SysUserServiceImplTenantIgnoreTest`（用真实 `DefaultTenantLineHandler` + 生产同口径配置断言
+  「无上下文时 `getById` 必被拦、`getByIdGlobal` 必放行、退出后不泄漏」）。
+- **手机号查重移出数据范围，跨部门重号改为友好业务错误**（`SysUserMapper` / `UserAccountSupport`）：
+  与用户名查重同源——`updateUser` 带 `@DataPermission`，原先的 `exists()` 查重落在部门范围内 ⇒
+  **跨部门重号查不到** ⇒ 校验通过后由唯一键抛原始 SQL 错误。现新增
+  `SysUserMapper#countByPhoneGlobal`（语句级 `@InterceptorIgnore(dataPermission = "true")`）
+  + `TenantContext.executeIgnore`（关租户过滤）并改用它，两道过滤缺一不可。
+  测试：`UserAccountSupportTest` 补 6 个用例（同部门/跨部门重号均报「手机号已存在」、执行时断言租户过滤已关
+  且退出后复位、编辑排除自身、手机号为空不查库、查重失败不掩盖异常）、
+  `SysUserMapperInterceptorIgnoreTest` 补该语句命中 MP `willIgnoreDataPermission` 的断言。
+- **数据范围报错不再教用户用错的机制**（`AdminDataScopeHandler`）：原文案建议
+  「调用侧改用 `@DataPermission(ignore = true)`」，但该机制在**外层已激活数据权限时不生效**——
+  `DataPermissionContext` 只有 `enter/exit/isActive`、**无挂起语义**，`DataPermissionAspect` 命中
+  `ignore=true` 时只是自己不再 `enter()` 而直接 `point.proceed()`，处理器依旧会被回调，用户照做后问题仍在。
+  现改为指向真正可行的机制（语句级 `@InterceptorIgnore(dataPermission = "true")` / 独立 Mapper 语句 /
+  不经 Mapper 的通道），并把「为什么无效」及三条可行路径写进注释，避免后来者重踩。
+  测试：`AdminDataScopeHandlerTest` 捕获日志文本，断言文案包含可行机制且不再出现旧文案。
+- **在线用户姓名回填改为跨租户全局**（`SysUserServiceImpl#pageOnlineUsers`）：姓名批量回填原先直接走
+  基类 `listByIds`，会被租户行拦截器追加 `tenant_id` 条件（`sys_user` 不在 `ignore-tables`）⇒
+  平台管理员**只能回填到本租户姓名，他租户行 `realName` 静默为 null**。而在线会话本身是跨租户的
+  （该接口挂在 `OnlineUserController` 的 `@PlatformAccess` 平台级语义下），故改为
+  `TenantContext.executeIgnore(() -> listByIds(ids))`。此处**无需** `@InterceptorIgnore`：数据权限只在
+  `@DataPermission` 作用域内才拼条件，本方法未标注、不产生额外查询。
+  测试：`SysUserServiceImplOnlineUserTest` 断言他租户在线用户同样回填到姓名、查询时租户过滤已关且退出后复位、
+  异常路径不吞异常也不泄漏忽略状态。
+- **写路径补 `deptId` 数据范围校验**（`SysUserServiceImpl#createUser/updateUser` +
+  `AdminDataScopeHandler#isDeptWithinScope`）：`@DataPermission` 只把范围条件拼进被标注方法内已发出的 SQL，
+  而写方法的 `deptId` 是**请求入参**、不经过任何查询（`createUser` 更是完全没有 `@DataPermission`）⇒
+  部门范围管理员可把用户建/改到任意部门。现两个写方法**先鉴权再校验/落库**，调用
+  `isDeptWithinScope`（与读路径共用 `resolveScope` 与 `RESOLVING` 递归标记，**不新写第二套口径**）：
+  平台超管或任一角色「全部数据」⇒ 不限；否则 `deptId` 必须在可见部门集合内（「本部门及以下」/「自定义」
+  照常展开部门树后代）。越界、以及 `deptId` 为空（读路径 `dept_id IN (...)` 匹配不到 NULL 行）一律
+  抛友好业务错误「目标部门不在你的数据范围内」，不静默忽略、不落到数据库层。
+  **代价**：每次写操作新增 2～4 次查询（超管判定 + 角色 + 按需部门树/角色-部门），调用点不在任何循环内。
+  **语义变化**：部门范围操作者现在**不能**把用户 `deptId` 置空或改到范围外（原先可静默做到，之后自己再也读不到）。
+  测试：`AdminDataScopeHandlerTest`（部门范围可写本部门/拒他部门、超管不受限、部门树后代展开、四类 fail-closed）、
+  `SysUserServiceImplDeptScopeTest`（越界必须友好报错且不落库/不查重、在范围内放行继续执行）。
 
 ### 文档
 
@@ -120,11 +168,10 @@
 
 ### 待决策与未处理（本轮盘点发现，未动手）
 
-  `@DataPermission` 作用域内执行，会带上部门条件 ⇒ 与「本部门之外已有同名用户」的重名检测不到，
-  最终由 `sys_user.uk_username` 抛原始 SQL 错误（是显式失败，不是静默放行，但错误信息不友好）。
-  建议把查重移到数据范围之外（独立 Bean，或 `@DataPermission(ignore = true)` 的方法），需先确认再改。
 - **`dept_id IS NULL` 的用户对「部门范围」操作者不可见**：`dept_id IN (...)` 不匹配 NULL，
   这是数据范围语义的自然结果（与同类框架一致）。是否要 OR 出 `dept_id IS NULL`（放宽可见性）属产品决策。
+  写路径已与读路径对齐（部门范围操作者不能把用户 `deptId` 置空，见上「写路径补 `deptId` 数据范围校验」）；
+  若日后决定放宽读侧可见性，写侧的拒绝规则需同步评估。
 - **`exportUsers` 双重注解**：`SysUserServiceImpl.exportUsers` 与 `UserExcelComponent.exportUsers`
   都标了 `@DataPermission`（跨 Bean 调用，切面各生效一次）。嵌套计数正确、无副作用，可择机去掉一处。
 - **敏感词词库热更新未接**：改 `sys_config.SENSITIVE_WORDS` 需重启才生效（starter 装配期只取一次词）。

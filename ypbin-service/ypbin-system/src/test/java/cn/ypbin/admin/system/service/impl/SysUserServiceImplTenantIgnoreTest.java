@@ -21,6 +21,7 @@ import cn.ypbin.admin.system.mapper.SysRoleMapper;
 import cn.ypbin.admin.system.mapper.SysUserPostMapper;
 import cn.ypbin.admin.system.mapper.SysUserRoleMapper;
 import cn.ypbin.admin.system.mapper.SysUserSocialMapper;
+import cn.ypbin.admin.system.provider.AdminDataScopeHandler;
 import cn.ypbin.admin.system.service.support.UserAccountSupport;
 import cn.ypbin.starter.core.exception.BusinessException;
 import cn.ypbin.starter.security.online.OnlineUserService;
@@ -74,7 +75,8 @@ class SysUserServiceImplTenantIgnoreTest {
             mock(SysPostMapper.class),
             mock(OnlineUserService.class),
             mock(UserExcelComponent.class),
-            mock(UserAccountSupport.class)));
+            mock(UserAccountSupport.class),
+            mock(AdminDataScopeHandler.class)));
         // 与 deploy/nacos/ypbin-system.yaml 同口径：fail-closed，且 sys_user 不在 ignore-tables
         TenantProperties properties = new TenantProperties();
         properties.setFailOnMissingTenant(true);

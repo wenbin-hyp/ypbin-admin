@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -179,6 +180,71 @@ public class AdminDataScopeHandler implements DataScopeHandler {
             return null;
         }
         return buildCondition(scope, userId);
+    }
+
+    /**
+     * 判定目标部门是否落在<b>当前操作者</b>的数据范围内，供**写路径显式校验**使用
+     * （{@code SysUserServiceImpl#createUser/updateUser} 的 {@code deptId} 入参）。
+     *
+     * <p><b>为什么读路径拦不住这件事</b>：{@code @DataPermission} 只把数据范围拼进被标注方法内
+     * 已发出的 SQL，而写方法里的 {@code deptId} 是<b>请求入参</b>、不经过任何查询。于是部门范围
+     * 管理员可以把自己范围内的用户 {@code update} 到任意部门、也可以 {@code create} 到任意部门
+     * （{@code createUser} 更是完全没有 {@code @DataPermission}）。写路径必须自己显式校验。</p>
+     *
+     * <p><b>为什么复用本类而不是另写一套判定</b>：数据范围口径（平台超管不受限、多角色取并集、
+     * 「本部门及以下」/「自定义」展开部门树后代、无角色或部门范围但无部门则拒绝全部）只能有一份实现，
+     * 否则读写口径必然漂移——读得到却写不进去、或写得进去却读不到。本方法与
+     * {@link #getDataScopeSql} 共用 {@link #resolveScope} 与 {@link #RESOLVING} 递归标记。</p>
+     *
+     * <p><b>语义（与读路径逐条对齐）</b>：平台超管或任一角色为「全部数据」⇒ 不限；
+     * 其余 ⇒ 仅当 {@code deptId} 落在可见部门集合内才允许。<b>刻意 fail-closed</b>：
+     * 取不到网关身份头、{@code deptId} 为空（读路径的 {@code dept_id IN (...)} 同样匹配不到 NULL 行）、
+     * 角色是「仅本人」或部门范围但没有部门——一律拒绝，不放行全量。</p>
+     *
+     * <p><b>代价</b>：每次调用 1 次超管判定 + 1 次角色查询（按数据范围类型另加 1 次部门树 /
+     * 1 次角色-部门批量）。调用点都在写方法内、<b>不在任何循环里</b>，量级与一次
+     * {@code @DataPermission} 读路径解析相同。</p>
+     *
+     * @param deptId 目标部门 ID，可为 {@code null}（表示不设部门）
+     * @return 在数据范围内返回 {@code true}
+     */
+    public boolean isDeptWithinScope(@Nullable Long deptId) {
+        Long userId = IdentityContext.getUserId().orElse(null);
+        if (userId == null) {
+            log.error("写路径数据范围校验失败：当前请求没有网关签发的身份头（取不到用户 ID），"
+                + "已按「拒绝」处理（不放行全量）。targetDeptId={}", deptId);
+            return false;
+        }
+        if (Boolean.TRUE.equals(RESOLVING.get())) {
+            // 结构上不可达：本方法只在写方法里调用，而解析自身的查询走的是 getDataScopeSql（已短路）。
+            // 保留兜底是为了万一将来被误用到解析链路里时「显式拒绝 + 留痕」，而不是无限递归或静默放行。
+            log.error("写路径数据范围校验被重入（解析自身查询调用了本方法），已按「拒绝」处理。"
+                + "targetDeptId={}", deptId);
+            return false;
+        }
+        Long userDeptId = IdentityContext.getLoginUser()
+            .map(LoginUser::getDeptId)
+            .orElse(null);
+        ResolvedScope scope;
+        RESOLVING.set(Boolean.TRUE);
+        try {
+            if (permissionServiceProvider.getObject().isSuperAdmin(userId)) {
+                return true;
+            }
+            scope = resolveScope(userId, userDeptId);
+        } finally {
+            RESOLVING.remove();
+        }
+        if (scope.unlimited()) {
+            return true;
+        }
+        // deptId 为空时不允许：读路径条件是 dept_id IN (...)，NULL 不匹配任何部门，写进去就再也读不到
+        boolean within = deptId != null && scope.deptIds().contains(deptId);
+        if (!within) {
+            log.warn("写路径数据范围校验未通过：userId={}, targetDeptId={}, 可见部门={}",
+                userId, deptId, scope.deptIds());
+        }
+        return within;
     }
 
     /**
