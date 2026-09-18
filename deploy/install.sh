@@ -986,7 +986,6 @@ else
   fi
   # 本地镜像缺失或官方/本地起失败 → 逐个尝试探测通过的国内加速
   if [ "$infra_ok" != "1" ]; then
-    reg prefix
     infra_reason=0
     for reg in $DOCKER_REGISTRY_CANDIDATES; do
       # OFFICIAL 是哨兵：空前缀即官方 Docker Hub（compose 里 ${REGISTRY_PREFIX:-} 为空）
