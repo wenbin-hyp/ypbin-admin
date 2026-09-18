@@ -23,8 +23,13 @@ import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -72,6 +77,31 @@ class CodingRulesTest {
     private static final String PROVIDER_PACKAGE = "..provider..";
 
     /**
+     * 覆盖下界①：导入的 admin 主源码类总数。
+     *
+     * <p><b>依据</b>（2026-09-18 本机实测，两种口径互相印证）：{@code target/classes} 形态下
+     * {@link ClassFileImporter} 导入 <b>392</b> 个类，与「7 个业务模块 {@code target/classes} 下
+     * {@code cn/ypbin/admin} 的 {@code .class} 文件数」逐模块核对一致
+     * （common 11 / gateway 2 / auth 17 / system 153 / ai 53 / system-api 121 / ai-api 35 = 392）；
+     * 而 fat jar 进入测试类路径的形态下只剩 <b>167</b> 个 = 392 − (gateway 2 + auth 17 + system 153
+     * + ai 53)——即仓里 4 个带 {@code repackage} 的模块整块消失，只剩 common / system-api /
+     * ai-api 三个非 fat jar 模块可见。</p>
+     *
+     * <p>取实测值而非「留余量的估值」：少一个类都说明导入范围被削。因业务代码删除导致合法下降时，
+     * 必须<b>同步下调本常量并在此写明理由</b>，不得靠放宽断言蒙混过去。</p>
+     */
+    private static final int MIN_IMPORTED_CLASSES = 392;
+
+    /** 覆盖下界②：{@code ..service.impl..} 类数（同上实测 40；fat jar 形态下为 0，即事故靶心）。 */
+    private static final int MIN_SERVICE_IMPL_CLASSES = 40;
+
+    /**
+     * 覆盖下界③：{@code ..provider..} 类数（同上实测 15；fat jar 形态下仅剩 2，即 {@code ypbin-common}
+     * 的那两个——绝大多数适配实现都藏在 fat jar 里）。规则的目标侧漏了，规则就恒真（永远绿）。
+     */
+    private static final int MIN_PROVIDER_CLASSES = 15;
+
+    /**
      * 规则：{@code service/impl} 不得依赖 {@code provider}。
      *
      * <p><strong>为什么需要这条</strong>：{@code provider} 是「宿主按 starter 端口契约给出的适配实现」
@@ -105,11 +135,99 @@ class CodingRulesTest {
 
     private static JavaClasses classes;
 
+    /**
+     * 显式导入各业务模块主源码的编译输出目录（{@code <module>/target/classes}）。
+     *
+     * <p><strong>为什么不 {@code importPackages("cn.ypbin.admin")}</strong>（2026-09-18 CI 事故）：
+     * 本仓共 4 个模块（{@code ypbin-system} / {@code ypbin-ai} / {@code ypbin-gateway} /
+     * {@code ypbin-auth}）的 {@code repackage} 未配 classifier，主构件被打成
+     * {@code BOOT-INF/classes} 布局的 fat jar。构建走到 {@code package}/{@code verify} 时测试类路径
+     * 拿到的是这个 fat jar，jar 根下没有 {@code cn/ypbin/admin} 条目 ⇒
+     * {@code importPackages} 一个业务类都看不到 ⇒ {@code ..service.impl..} 选中 0 个类 ⇒
+     * ArchUnit 报「failed to check any classes」；而只跑到 {@code test} 时拿到 {@code target/classes}
+     * 又一切正常 ⇒ <b>门禁结果依赖打包形态</b>。改为按模块目录导入后，两种形态得到<b>同一份</b>字节码。</p>
+     *
+     * <p>模块清单由聚合 pom 递归推导（{@link SourceScan#sourceModuleRoots()}），新增模块自动纳入；
+     * 任一模块没有 {@code target/classes} 时<b>显式失败</b>而不是缩水导入（禁静默降级）。</p>
+     */
     @BeforeAll
     static void importClasses() {
         classes = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-            .importPackages("cn.ypbin.admin");
+            .importPaths(moduleClassesDirs());
+    }
+
+    /**
+     * 各业务模块主源码的 {@code target/classes} 目录。
+     *
+     * @return 目录清单（存在性已校验）
+     */
+    private static List<Path> moduleClassesDirs() {
+        Set<Path> dirs = new LinkedHashSet<>();
+        Set<String> missing = new LinkedHashSet<>();
+        try {
+            for (Path moduleRoot : SourceScan.sourceModuleRoots()) {
+                Path classesDir = moduleRoot.resolve(SourceScan.CLASSES_DIR);
+                if (Files.isDirectory(classesDir)) {
+                    dirs.add(classesDir);
+                } else {
+                    missing.add(SourceScan.relative(moduleRoot));
+                }
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("推导业务模块目录失败", ex);
+        }
+        // 先报缺失（含「全部缺失」的情形，例如 fresh clone 下裸 `-pl` 不带 -am），否则列清单的提示不可达
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("以下模块没有 " + SourceScan.CLASSES_DIR
+                + "，架构测试无法导入其字节码：" + missing
+                + "；请用 `mvn -pl ypbin-architecture-tests -am test`（缺 -am 时兄弟模块从 ~/.m2 解析，"
+                + "本地可能只有已 repackage 的 fat jar，且没有 target/classes）");
+        }
+        if (dirs.isEmpty()) {
+            throw new IllegalStateException("聚合 pom 的模块清单里没有含 src/main/java 的模块（仓库根："
+                + SourceScan.repoRoot() + "）");
+        }
+        return List.copyOf(dirs);
+    }
+
+    /** 按 ArchUnit 的包谓词计数（与规则选类的语义完全一致，故它就是「规则实际检查了多少类」） */
+    private static long countInPackage(String packagePattern) {
+        DescribedPredicate<JavaClass> predicate = JavaClass.Predicates.resideInAPackage(packagePattern);
+        return classes.stream().filter(predicate).count();
+    }
+
+    @Test
+    @DisplayName("覆盖自检：字节码导入必须真的看到业务模块的类（防「0 类空转」的假绿）")
+    void importedClassesShouldCoverBusinessModules() {
+        assertThat(classes.size())
+            .as("导入的 admin 主源码类总数不得低于实测下界；降低说明导入范围被削（例如又退回 fat jar 形态）")
+            .isGreaterThanOrEqualTo(MIN_IMPORTED_CLASSES);
+        assertThat(countInPackage(SERVICE_IMPL_PACKAGE))
+            .as("`" + SERVICE_IMPL_PACKAGE + "` 是「service/impl 禁依赖 provider」规则的选类条件；"
+                + "为 0 时 ArchUnit 会直接报 failed to check any classes，门禁变成空转")
+            .isGreaterThanOrEqualTo(MIN_SERVICE_IMPL_CLASSES);
+        assertThat(countInPackage(PROVIDER_PACKAGE))
+            .as("`" + PROVIDER_PACKAGE + "` 是上述规则的目标侧包；看不到它规则恒真（永远绿）")
+            .isGreaterThanOrEqualTo(MIN_PROVIDER_CLASSES);
+    }
+
+    @Test
+    @DisplayName("覆盖自检：每个业务模块都必须真的贡献了被检查的类（防「模块级」空转）")
+    void everySourceModuleShouldContributeClasses() {
+        List<String> empty = new ArrayList<>();
+        for (Path dir : moduleClassesDirs()) {
+            String prefix = dir.toUri().toString();
+            boolean contributed = classes.stream().anyMatch(clazz -> clazz.getSource()
+                .map(source -> source.getUri().toString().startsWith(prefix))
+                .orElse(false));
+            if (!contributed) {
+                empty.add(SourceScan.relative(dir));
+            }
+        }
+        assertThat(empty)
+            .as("以下模块的 target/classes 一个类都没进分析范围：模块清单推导或导入路径已失效")
+            .isEmpty();
     }
 
     @Test
