@@ -10,6 +10,7 @@
 package cn.ypbin.admin.arch;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -63,6 +64,12 @@ final class SourceScan {
 
     /** 遍历时直接跳过的目录名（构建产物/依赖装目录，纯性能考虑） */
     private static final Set<String> SKIPPED_DIRS = Set.of("target", "node_modules", ".git", ".flattened");
+
+    /** 判定「这个模块真的产出主源码」的目录标记 */
+    private static final String MAIN_SOURCE_MARKER = "src/main/java";
+
+    /** 主源码的编译输出目录名（相对模块目录） */
+    static final String CLASSES_DIR = "target/classes";
 
     private static final Pattern MODULE_TAG = Pattern.compile("<module>([^<]+)</module>");
 
@@ -143,7 +150,58 @@ final class SourceScan {
      * @throws IOException 读 pom 失败
      */
     static List<Path> moduleRoots() throws IOException {
-        String pom = rootPom();
+        Set<String> names = new LinkedHashSet<>(allModulesIn(rootPom()));
+        List<Path> roots = new ArrayList<>();
+        for (String name : names) {
+            Path candidate = repoRoot().resolve(name);
+            if (Files.isDirectory(candidate)) {
+                roots.add(candidate);
+            }
+        }
+        return roots;
+    }
+
+    /**
+     * 本仓「有主源码的模块」目录：从聚合 pom 的模块清单（顶层 + 全部 profile）递归下钻
+     * {@code <modules>}，收集所有含 {@code src/main/java} 的模块（叶子模块，以及自带主源码的聚合模块——
+     * 口径与 {@link #mainSources()} 一致，避免「源码规则扫得到、字节码规则扫不到」的分叉）。
+     *
+     * <p><strong>存在的理由（2026-09-18 CI 事故）</strong>：本仓 4 个模块（{@code ypbin-system} /
+     * {@code ypbin-ai} / {@code ypbin-gateway} / {@code ypbin-auth}）的
+     * {@code spring-boot-maven-plugin:repackage} 没有配 classifier，主构件会被替换成
+     * {@code BOOT-INF/classes} 布局的 fat jar；一旦 Maven 把该 jar 放进测试类路径，
+     * {@code importPackages("cn.ypbin.admin")} <b>看不到这些模块的任何业务类</b>（jar 根下没有
+     * {@code cn/ypbin/admin} 条目），而看到什么又取决于构建停在 {@code test} 还是
+     * {@code package}/{@code verify}——门禁结果于是依赖打包形态。故架构测试改为
+     * <b>按本方法推导出的模块目录显式导入 {@code target/classes}</b>，不再问 Maven 要的是 jar 还是目录。</p>
+     *
+     * <p>递归读 pom 而非写死清单：新增模块（含聚合子模块）自动进入导入范围，不会静默逃出门禁。</p>
+     *
+     * @return 模块目录（去重，顺序稳定：按 pom 声明顺序深度优先）
+     * @throws IOException 读 pom 失败
+     */
+    static List<Path> sourceModuleRoots() throws IOException {
+        List<Path> roots = new ArrayList<>();
+        collectSourceModules(repoRoot(), roots);
+        return List.copyOf(new LinkedHashSet<>(roots));
+    }
+
+    /** 深度优先收集含主源码的模块（聚合模块自身有主源码时也一并收集） */
+    private static void collectSourceModules(Path moduleRoot, List<Path> sink) throws IOException {
+        if (Files.isDirectory(moduleRoot.resolve(MAIN_SOURCE_MARKER))) {
+            sink.add(moduleRoot);
+        }
+        Path pom = moduleRoot.resolve("pom.xml");
+        List<String> children = Files.isRegularFile(pom)
+            ? allModulesIn(Files.readString(pom, StandardCharsets.UTF_8))
+            : List.of();
+        for (String child : children) {
+            collectSourceModules(moduleRoot.resolve(child), sink);
+        }
+    }
+
+    /** 一段 pom 文本里<b>所有</b> {@code <modules>} 块（顶层 + 每个 profile）声明的模块名 */
+    static List<String> allModulesIn(String pom) {
         Set<String> names = new LinkedHashSet<>();
         int cursor = 0;
         while (cursor < pom.length()) {
@@ -154,14 +212,7 @@ final class SourceScan {
             names.addAll(modulesFrom(pom, start));
             cursor = start + 1;
         }
-        List<Path> roots = new ArrayList<>();
-        for (String name : names) {
-            Path candidate = repoRoot().resolve(name);
-            if (Files.isDirectory(candidate)) {
-                roots.add(candidate);
-            }
-        }
-        return roots;
+        return List.copyOf(names);
     }
 
     /**
