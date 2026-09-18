@@ -36,9 +36,10 @@
 #   REDIS_PASSWORD=                Redis 密码（Docker 模式自动随机生成；NO_DOCKER 用外部 Redis
 #                                  有密码时须传入（导入 Nacos 共享配置用），无认证可留空）
 #   MYSQL_ROOT_PASSWORD=           Docker 模式内建 MySQL 密码（必填）
-#   AI_MODEL_SECRET_KEY=           AI 模型 API Key 的加密密钥（**必填**，16/24/32 字节）。
-#                                  用于加解密库内已存的模型密钥，**必须长期保持不变**——换新值后旧密文
-#                                  无法解密。生成：openssl rand -hex 16
+#   AI_MODEL_SECRET_KEY=           AI 模型 API Key 的加密密钥（16/24/32 字节）。
+#                                  首次全新部署未显式提供时自动随机生成并写入 .env（请妥善保存）；
+#                                  复用旧 .env 时必须沿用旧值（换新值后旧密文无法解密）；
+#                                  多分支共用同一套密文时须显式传相同值。
 #   NACOS_AUTH_TOKEN= NACOS_AUTH_IDENTITY_KEY= NACOS_AUTH_IDENTITY_VALUE=
 #                                  Nacos 服务端鉴权凭据（自动随机生成，一般无需手传；
 #                                  NACOS_AUTH_TOKEN 需 Base64 且解码后 ≥32 字节）
@@ -858,11 +859,17 @@ rand_hex() { # $1=字节数，输出 2 倍长度小写十六进制
 
 if [ ! -f "$ENV_FILE" ]; then
   MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-YpbinRoot$(date +%s)}"
-  # AI 模型密钥的加密密钥：不接受内置默认值——公开已知的默认值等同未加密；也不随机生成——
-  # 一旦换新 .env（分支部署各自目录）旧密文将永久无法解密。必须由运维显式提供且长期保持不变。
-  AI_MODEL_SECRET_KEY="${AI_MODEL_SECRET_KEY:-}"
-  [ -n "$AI_MODEL_SECRET_KEY" ] \
-    || die "未设置 AI_MODEL_SECRET_KEY（AI 模型 API Key 的加密密钥，16/24/32 字节，须长期保持不变）。生成：openssl rand -hex 16"
+  # AI 模型密钥的加密密钥：不接受内置默认值——公开已知的默认值等同未加密。
+  # 首次全新部署（.env 不存在、无旧密文）时自动随机生成并写入 .env，同时醒目提示妥善保存；
+  # 复用旧 .env 时绝不自动生成（换值即旧密文永久不可解密），见下方 check_required_key 前置校验。
+  if [ -n "${AI_MODEL_SECRET_KEY:-}" ]; then
+    : # 运维显式提供（多分支共用密文场景）则原样采用
+  else
+    AI_MODEL_SECRET_KEY="$(rand_hex 16)"
+    warn "已自动生成 AI_MODEL_SECRET_KEY（AI 模型 API Key 的加密密钥）。"
+    warn ">>> 请立即抄写并妥善保存该密钥（见 .env 的 AI_MODEL_SECRET_KEY）：$AI_MODEL_SECRET_KEY"
+    warn ">>> 它用于加解密库内已存的模型 API Key，必须长期保持不变——更换或丢失后，已保存的模型密钥将永久无法解密。"
+  fi
   # Nacos 服务端鉴权凭据：token 与身份标识值随机生成，避免固定默认值入库
   NACOS_AUTH_TOKEN="${NACOS_AUTH_TOKEN:-$(rand_b64_48)}"
   NACOS_AUTH_IDENTITY_KEY="${NACOS_AUTH_IDENTITY_KEY:-serverIdentity}"
@@ -925,7 +932,9 @@ else
   env_key_backfill REDIS_PASSWORD 'rand_hex 16'
 fi
 
-# AI_MODEL_SECRET_KEY 不在补生成范围内：它加密库内数据，不能自动生成（换值即旧密文不可解密）。
+# AI_MODEL_SECRET_KEY 不在「补生成」范围内：全新部署已在上面自动生成并写入 .env；
+# 此处补生成仅作用于「复用旧 .env」场景，此时库里可能已有旧密文，自动生成新值=旧密文永久不可解密，
+# 故必须沿用旧值（或由运维显式传入），缺失即报错而非静默换新。
 # 这里做「存在性 + 长度」前置校验，覆盖「旧 .env 尚未包含该键」「未通过环境变量传入」「长度非法」三种情况，
 # 把失败点从第 6 步 compose 的 :? 与更晚的 AI 服务启动，提前到配置阶段；也避免再次退化成公开默认值。
 check_required_key() { # $1=键名 $2=生成命令提示 $3=允许的字节长度（空格分隔）
