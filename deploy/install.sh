@@ -299,26 +299,185 @@ check_service_containers() {
   return 0
 }
 
+# ---------- pnpm 可用性预检与失败分类诊断 ----------
+# 现场教训（一手证据）：pnpm 的单文件可执行版（@pnpm/exe）依赖系统 libatomic.so.1，缺库时 pnpm
+# **连 `--version` 都跑不起来**，原始输出：
+#   .../@pnpm/exe/11.16.0/.../node_modules/@pnpm/exe/pnpm:
+#     error while loading shared libraries: libatomic.so.1: cannot open shared object file: No such file or directory
+# 而旧逻辑把这类失败一律猜成「最常见原因：大包拉取超时 [23]」，让现场把排查方向全押在网络/超时上，
+# 只能翻原始日志才看到真因。故此处改为：**先预检**并拿住 pnpm 的输出与退出码，再按输出里的
+# **具体证据**分类诊断；判不出来就原样回显关键错误行 + 给自查命令，绝不再给"可能的原因"。
+PNPM_LOG=/tmp/ypbin-pnpm-install.log          # 本次 install 的完整输出（供失败后回显关键行）
+PNPM_PRECHECK_LOG=/tmp/ypbin-pnpm-precheck.log # pnpm --version 的退出码 + 原始输出
+PNPM_APT_LOG=/tmp/ypbin-pnpm-apt.log          # 自动安装 libatomic1 的输出
+
+# 预检：pnpm 本身能否被加载并执行。输出与退出码都留档，失败时不丢原始证据。
+pnpm_precheck() {
+  local out rc
+  out="$(pnpm --version 2>&1)" && rc=0 || rc=$?
+  printf 'exit=%s\n%s\n' "$rc" "$out" > "$PNPM_PRECHECK_LOG"
+  if [ "$rc" = "0" ]; then
+    ok "pnpm 可用性预检通过：pnpm $(printf '%s' "$out" | head -n1)"
+    return 0
+  fi
+  warn "pnpm 可用性预检失败：\"pnpm --version\" 退出码 $rc，原始输出如下——"
+  printf '%s\n' "$out" | sed 's/^/    /'
+  return 1
+}
+
+# —— 分类依据一律是工具自己打印的原文特征串，不是"经验上最常见" ——
+# 缺系统运行库（动态链接器报的错）
+pnpm_output_is_missing_lib() {
+  grep -qE 'error while loading shared libraries|cannot open shared object file' "$1" 2>/dev/null
+}
+# 网络/超时类（pnpm 与 Node 的取数失败特征串）
+pnpm_output_is_network() {
+  grep -qE 'aborted due to timeout|ERR_PNPM_FETCH|ETIMEDOUT|ESOCKETTIMEDOUT|\[23\]|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|Failed to fetch|request to .* failed' "$1" 2>/dev/null
+}
+# 从报错里取出**具体缺哪个库**（形如 libatomic.so.1），据此给精确命令而不是笼统"装 gcc"
+pnpm_missing_lib_name() {
+  grep -oE '[A-Za-z0-9_.+-]+\.so(\.[0-9]+)*' "$1" 2>/dev/null | head -n1
+}
+
+# 缺系统库的修复指引（返回 0 = 已自动修好，可继续；1 = 需人工处理）。
+# 已核实（一手）：Debian/Ubuntu 上 libatomic.so.1 由 libatomic1 提供（实测下载 noble-updates 的
+# libatomic1_14.2.0-4ubuntu2~24.04.1_amd64.deb，内含 /usr/lib/x86_64-linux-gnu/libatomic.so.1）；
+# rpm 系（RHEL/CentOS/Alma/Rocky/Fedora）包名为 libatomic，提供 libatomic.so.1()(64bit)
+# （实测 AlmaLinux 9 BaseOS repodata primary.xml：libatomic-11.5.0-14.el9.alma.x86_64）。
+#
+# 自动修的判断：**只**在「缺失库就是 libatomic.so.*」且「root」且「Debian 系且 apt-get 可用」时动手。
+# 理由：libatomic1 是发行版官方仓库里 10KB 级的运行库、无服务重启/数据副作用，装完 pnpm 即可用，
+# 收益（现场不必人工介入）明显大于风险；而 rpm 系包名与命令都不同、apt 锁竞争、缺的是别的库
+# 这三种情况一律不动手，只打印命令 —— 猜错包名去装比不装更糟。
+pnpm_report_missing_lib() {
+  local lib="$1"
+  warn "判定依据（pnpm 原文特征）：error while loading shared libraries / cannot open shared object file"
+  warn "这是【系统运行库缺失】：pnpm 可执行文件根本没被加载起来，**不是网络/超时问题**——"
+  warn "放宽 fetch-timeout、增加 fetch-retries 这类处置对它完全无效。缺失的库：${lib:-（未能从输出解析出库名）}"
+  info "自查（可复算）：ldd \"\$(command -v pnpm)\" | grep 'not found'"
+  case "$lib" in
+    libatomic.so*)
+      local apt_cmd="apt-get update && apt-get install -y libatomic1"
+      local rpm_cmd="dnf install -y libatomic   # rpm 系：yum install -y libatomic 亦可"
+      info "Debian/Ubuntu 修复命令：$apt_cmd"
+      info "rpm 系（RHEL/CentOS/Alma/Rocky/Fedora）包名不同：$rpm_cmd"
+      ;;
+    *)
+      info "本脚本不代为猜测包名。请用包管理器反查该库由哪个包提供："
+      info "  Debian/Ubuntu：apt-get install -y apt-file && apt-file search ${lib:-<库名>}"
+      info "  rpm 系：dnf provides '*/${lib:-<库名>}'"
+      return 1
+      ;;
+  esac
+  if [ "$(id -u)" != "0" ]; then
+    warn "当前不是 root，不自动安装；请以 root 执行上面打印的命令后重跑本脚本。"
+    return 1
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    warn "未找到 apt-get（非 Debian 系），不自动安装；请按上面打印的命令人工处理。"
+    return 1
+  fi
+  local distro_id="unknown"
+  [ -f /etc/os-release ] && distro_id="$(. /etc/os-release && echo "${ID:-unknown}")"
+  case "$distro_id" in
+    ubuntu|debian|linuxmint|pop|zorin) ;;
+    *)
+      warn "当前发行版 $distro_id 非 Debian 系，不自动执行 apt（避免装错包）；请人工处理。"
+      return 1
+      ;;
+  esac
+  info "自动修复：即将以 root 执行 → $apt_cmd （完整输出见 $PNPM_APT_LOG）"
+  if apt-get install -y libatomic1 >"$PNPM_APT_LOG" 2>&1 \
+    || { apt-get update -y >>"$PNPM_APT_LOG" 2>&1 && apt-get install -y libatomic1 >>"$PNPM_APT_LOG" 2>&1; }; then
+    ok "libatomic1 安装完成"
+    if pnpm --version >/dev/null 2>&1; then
+      ok "pnpm 预检复验通过：pnpm $(pnpm --version 2>/dev/null | head -n1)"
+      return 0
+    fi
+    warn "已装 libatomic1，但 pnpm 仍起不来（可能缺的不止这一个库）；自查：ldd \"\$(command -v pnpm)\" | grep 'not found'"
+    return 1
+  fi
+  warn "自动安装失败（多为 apt 锁被占用或源不可达），apt 输出尾部："
+  tail -n 15 "$PNPM_APT_LOG" 2>/dev/null | sed 's/^/    /'
+  warn "请手工执行：$apt_cmd"
+  return 1
+}
+
+# 无法判定原因时的自查清单（只给命令，不给结论）
+pnpm_selfcheck_hint() {
+  info "自查命令（逐条在服务器上执行，按真实报错定位）："
+  info "  1) pnpm --version                                # pnpm 能否被加载执行"
+  info "  2) ldd \"\$(command -v pnpm)\" | grep 'not found'   # 有输出即为缺系统库"
+  info "  3) df -h \"$ROOT\"                                  # 磁盘空间（前端依赖需数 GB）"
+  info "  4) tail -n 50 $PNPM_LOG                           # 本次安装的原始日志尾部"
+}
+
+# 预检失败的诊断入口
+pnpm_diagnose_precheck_failure() {
+  if pnpm_output_is_missing_lib "$PNPM_PRECHECK_LOG"; then
+    pnpm_report_missing_lib "$(pnpm_missing_lib_name "$PNPM_PRECHECK_LOG")" && return 0
+    return 1
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    warn "判定依据：command -v pnpm 无输出 —— pnpm 未安装或不在 PATH，同样不是库缺失/网络问题。"
+    info "自查：command -v pnpm；echo \"\$PATH\""
+    info "处置：npm install -g pnpm（或把 pnpm 所在目录并入 PATH）后重跑本脚本。"
+    return 1
+  fi
+  warn "pnpm 起不来，但其输出中没有可识别的失败特征，**无法判定原因**（不做猜测）。"
+  pnpm_selfcheck_hint
+  return 1
+}
+
+# install 仍失败后的诊断入口（保留重试一次之后的收尾）
+pnpm_diagnose_install_failure() {
+  local log="$1"
+  if pnpm_output_is_missing_lib "$log"; then
+    pnpm_report_missing_lib "$(pnpm_missing_lib_name "$log")" && return 0
+    return 1
+  fi
+  if pnpm_output_is_network "$log"; then
+    warn "判定依据（日志原文特征）：timeout / ERR_PNPM_FETCH / [23] 等 —— 归为【网络/超时】类。"
+    info "本脚本已放宽 fetch-timeout=600000、fetch-retries=5、network-concurrency=8 并已重试一次；"
+    info "如需再试，在服务器手工重试（不改包管理器、不改 pnpm 版本）："
+    info "  cd $ROOT/ypbin-admin-ui && pnpm config set fetch-timeout 600000 && pnpm install"
+    info "自查：df -h \"$ROOT\"（磁盘）；curl -fsSI --connect-timeout 8 https://registry.npmmirror.com（registry 连通性）"
+    return 1
+  fi
+  warn "无法判定具体原因（日志里没有可识别的失败特征）——不猜测，下面原样回显最后 30 行："
+  tail -n 30 "$log" 2>/dev/null | sed 's/^/    /'
+  pnpm_selfcheck_hint
+  return 1
+}
+
 # 安装前端依赖：放宽 pnpm 拉取超时并自动重试一次。
 # 现场教训：大包（@iconify/json ~95MB、@turbo/linux-64 ~19MB）在 pnpm 默认 60s 拉取超时下会中断，
 # 报 [23] The operation was aborted due to timeout；此时即使已复用 1600+ 个包，整个安装仍算失败。
 # 放宽 fetch-timeout / 重试次数并下调并发，比"推倒重来"更符合现场（失败一次即整体失败，重试代价低）。
+# ⚠️ 那只是**其中一类**失败；pnpm 自身起不来（缺系统库等）必须先按证据识别，见上方预检区。
 install_frontend_deps() {
   local ui_dir="$ROOT/ypbin-admin-ui"
+  # ① 预检 pnpm 可用性：起不来就立刻精确报因并返回，不再往下装依赖
+  #   （否则加载错误会被 install 的噪音淹没 —— 现场正是这样被误报成"拉包超时"的）
+  if ! pnpm_precheck; then
+    # 诊断返回 0 = 已按证据精确报因且自动修好，继续装依赖；否则立即失败（不再往下误导）
+    pnpm_diagnose_precheck_failure || { return 1; }
+  fi
   pnpm config set registry https://registry.npmmirror.com >/dev/null 2>&1 || true
   pnpm config set fetch-timeout 600000 >/dev/null 2>&1 || true
   pnpm config set fetch-retries 5 >/dev/null 2>&1 || true
   pnpm config set fetch-retry-maxtimeout 600000 >/dev/null 2>&1 || true
   pnpm config set network-concurrency 8 >/dev/null 2>&1 || true
-  if (cd "$ui_dir" && pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1); then
+  # tee 仅为留档；脚本已 set -o pipefail，故 if 判定的仍是 pnpm 子 shell 的退出码（语义不变）
+  if (cd "$ui_dir" && pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1) | tee "$PNPM_LOG"; then
     return 0
   fi
-  warn "前端依赖安装失败（最常见原因：大包拉取超时 [23]）。已放宽 pnpm 拉取超时与重试次数，重试一次……"
-  if (cd "$ui_dir" && pnpm install 2>&1); then
+  warn "前端依赖安装失败。已放宽 pnpm 拉取超时与重试次数，重试一次……"
+  if (cd "$ui_dir" && pnpm install 2>&1) | tee "$PNPM_LOG"; then
     return 0
   fi
-  warn "前端依赖安装仍失败。自查：df -h \"$ROOT\"（磁盘空间是否足够，前端依赖需数 GB）"
-  warn "手动重试：cd $ui_dir && pnpm config set fetch-timeout 600000 && pnpm install"
+  warn "前端依赖安装仍失败（含重试一次 pnpm install，均返回非 0）"
+  pnpm_diagnose_install_failure "$PNPM_LOG" || true
   return 1
 }
 
