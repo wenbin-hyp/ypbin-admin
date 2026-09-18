@@ -50,9 +50,10 @@
 #   REBUILD_FRONTEND=1             强制重新构建前端。默认：产物比源码新则复用、否则自动重建
 #                                  （改了前端源码或 apps/web-antd/.env* 后重跑即可，无需先删 admin-ui-dist）；
 #                                  SKIP_FRONTEND=1 则永不构建（必须已有产物）
-#   REGISTRY_PREFIX=               Docker 镜像前缀（如加速源 docker.m.daocloud.io/；留空=自动探测：
-#                                  官方源可达时优先官方，否则用国内加速）。海外/香港服务器若不想等探活，
-#                                  可直接 export REGISTRY_PREFIX=docker.io/ 明确走官方源
+#   REGISTRY_PREFIX=               Docker 镜像前缀（如加速源 docker.m.daocloud.io/）。留空=用机器默认：
+#                                  直接走 Docker 守护进程配置的 registry-mirrors，无配置即官方 Docker Hub；
+#                                  脚本不做任何镜像源探测/遍历。需要加速源（或强制官方源 docker.io/）时显式设置：
+#                                  export REGISTRY_PREFIX=<前缀>/，或写入 .env 的 REGISTRY_PREFIX=...
 #   NO_DOCKER=1                    无 Docker 模式：java -jar 直接启动
 # ============================================================
 
@@ -174,40 +175,6 @@ starter_revision_from_pom() {
   rev="$(sed -n 's|.*<revision>\([^<]*\)</revision>.*|\1|p' "$pom" | head -1)"
   [ -n "$rev" ] || return 1
   printf '%s' "$rev"
-}
-
-# 解析基础设施镜像的 registry 前缀候选顺序。
-# 背景：国内加速源是给「官方 Docker Hub 不可达」的环境用的；而海外/香港服务器恰恰相反——
-# 官方源可达、加速源往往全挂。原实现只在「本地已有镜像」的分支里用官方源，全新服务器上
-# 从不尝试官方源，于是在加速源全挂时必然卡死。
-# 结果写入全局 DOCKER_REGISTRY_CANDIDATES（空格分隔；OFFICIAL 为哨兵，表示官方源=空前缀）。
-resolve_registry_candidates() {
-  DOCKER_REGISTRY_CANDIDATES=""
-  local official_code d code
-  official_code=$(timeout 5 curl -sI -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null || true)
-  case "$official_code" in
-    200|301|302|401)
-      DOCKER_REGISTRY_CANDIDATES="OFFICIAL"
-      info "Docker Hub 官方源可达（HTTP ${official_code}），优先使用官方源"
-      ;;
-    *)
-      info "Docker Hub 官方源不可达（HTTP ${official_code:-不通}），改用国内镜像加速源"
-      ;;
-  esac
-  for d in $REGISTRY_CANDIDATE_DOMAINS; do
-    # registry v2 探活（5s 快超时）：200/301/302/401 均视为可达（401 为正常未认证响应，
-    # 不能用 curl -f——会把 401 误判失败跳过可达源）；其余状态/超时视为不通立即跳过
-    code=$(timeout 5 curl -sI -o /dev/null -w '%{http_code}' "https://$d/v2/" 2>/dev/null || true)
-    case "$code" in
-      200|301|302|401) DOCKER_REGISTRY_CANDIDATES="$DOCKER_REGISTRY_CANDIDATES ${d}/" ;;
-      *) warn "镜像加速 ${d} 探活失败(HTTP ${code:-不通})，跳过" ;;
-    esac
-  done
-  # 显式指定则只试该前缀；写 docker.io/ 即表示官方源（Docker 会规范化为 Hub 并补 library/ 前缀）
-  if [ -n "${REGISTRY_PREFIX:-}" ]; then
-    DOCKER_REGISTRY_CANDIDATES="${REGISTRY_PREFIX%/}/"
-    info "按 REGISTRY_PREFIX 指定 registry：${REGISTRY_PREFIX%/}/"
-  fi
 }
 
 # 选择构建 starter 用的代码引用：优先与 admin 依赖版本一致的 tag。
@@ -422,8 +389,8 @@ ensure_mysql_auth() {
 }
 
 # 判定「compose 启动失败」是否与镜像仓库无关。
-# 现场教训：Nacos 需要宿主机 8080，端口被占用时 compose 整体退出非零，脚本却报成
-# 「Docker Hub 与国内加速均不可达」，把排查方向带偏——所以要按日志分类，并给出真因与处置。
+# 现场教训：Nacos 需要宿主机 8080，端口被占用时 compose 整体退出非零，脚本却把真因报成了
+# 镜像源不可达（现已不再探测镜像源），把排查方向带偏——所以要按日志分类，并给出真因与处置。
 infra_failure_reason() {
   if grep -qE "port is already allocated|Bind for [^ ]+ failed" /tmp/infra-up.log 2>/dev/null; then
     local port holder
@@ -962,70 +929,34 @@ if [ "$NO_DOCKER" = "1" ]; then
 else
   info "[5.5/7] 启动基础设施（Nacos/Redis/MySQL）"
   cd "$ROOT/ypbin-admin/deploy"
-  # 官方 Docker Hub 在国内常不可达：REGISTRY_PREFIX 显式指定 → 只试该前缀；
-  # 未指定时先试官方源，再对"连通性探测通过"的国内公共镜像加速逐个尝试（首个成功即用）。
-  REGISTRY_CANDIDATE_DOMAINS="docker.m.daocloud.io docker.1ms.run docker.1panel.live docker.1panel.top hub.rat.dev dockerpull.org docker.xuanyuan.me dockerproxy.cn docker.rainbond.cc"
-  resolve_registry_candidates
-  infra_up() { # $1=REGISTRY_PREFIX(含尾/或空=官方)
-    if [ -z "$1" ]; then
-      REGISTRY_PREFIX= docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d nacos redis mysql
-    else
-      REGISTRY_PREFIX="$1" docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d nacos redis mysql
-    fi
-  }
-  infra_ok=0
-  # 本地已具备全部基础设施镜像（如经 docker load 导入）→ 直接起，不联网拉取；
-  # up 失败且因自定义网络网段与残留旧网络重叠时，清理无容器使用的网络后重试一次
-  infra_up_retry() { # 先官方起；失败清理残留网络再起一次；仍失败交候选循环
-    infra_up "" || { docker network prune -f >/dev/null 2>&1; infra_up ""; }
-  }
-  if docker image inspect mysql:8.4 nacos/nacos-server:v3.2.4 redis:7-alpine >/dev/null 2>&1; then
-    if infra_up_retry >/tmp/infra-up.log 2>&1; then
-      infra_ok=1
-    fi
+  # 基础设施镜像只走「一次 compose up」，不做任何镜像源探测/遍历：
+  # REGISTRY_PREFIX 有值（使用者显式 export，或已在复用的 .env 中设置）→ 按该前缀拉取；
+  # 为空 → 不带前缀，直接用 Docker 守护进程默认源（其配置的 registry-mirrors；无配置即官方 Docker Hub）。
+  infra_registry_prefix="${REGISTRY_PREFIX:-}"
+  if [ -n "$infra_registry_prefix" ]; then
+    infra_registry_desc="显式前缀 ${infra_registry_prefix%/}/"
+    info "基础设施镜像按显式 REGISTRY_PREFIX=${infra_registry_prefix%/}/ 拉取"
+  else
+    infra_registry_desc="机器默认（Docker 守护进程 registry-mirrors，无配置即官方 Docker Hub）"
+    info "基础设施镜像走机器默认源，不做镜像加速探测"
   fi
-  # 本地镜像缺失或官方/本地起失败 → 逐个尝试探测通过的国内加速
-  if [ "$infra_ok" != "1" ]; then
-    infra_reason=0
-    for reg in $DOCKER_REGISTRY_CANDIDATES; do
-      # OFFICIAL 是哨兵：空前缀即官方 Docker Hub（compose 里 ${REGISTRY_PREFIX:-} 为空）
-      if [ "$reg" = "OFFICIAL" ]; then prefix=""; else prefix="$reg"; fi
-      if infra_up "$prefix" >/tmp/infra-up.log 2>&1; then
-        if [ -n "$prefix" ]; then
-          ok "基础设施镜像经镜像加速拉取成功：${prefix%/}"
-          echo "REGISTRY_PREFIX=$prefix" >> "$ENV_FILE"
-          warn "已将 REGISTRY_PREFIX=$prefix 写入 .env（后续 compose up 复用）"
-        else
-          ok "基础设施镜像已从 Docker Hub 官方源拉取成功"
-        fi
-        infra_ok=1
-        break
-      fi
-      infra_failure_reason || infra_reason=$?
-      if [ "$infra_reason" = "10" ]; then
-        # 端口占用与镜像仓库无关，继续换源只会浪费时间与刷屏
-        warn "该失败与镜像仓库无关，停止尝试其余源"
-        break
-      fi
-      if [ -n "$prefix" ]; then
-        warn "镜像加速 ${prefix%/} 拉取失败，尝试下一个..."
-      else
-        warn "Docker Hub 官方源拉取失败，尝试下一个..."
-      fi
-    done
-  fi
-  if [ "$infra_ok" != "1" ]; then
+  infra_reason=0
+  if ! REGISTRY_PREFIX="$infra_registry_prefix" docker compose -f docker-compose.yml --env-file "$ENV_FILE" up -d nacos redis mysql >/tmp/infra-up.log 2>&1; then
     tail -5 /tmp/infra-up.log 2>/dev/null || true
+    # 按日志分类真因（端口占用/磁盘不足/镜像拉取失败），避免一律归咎于镜像源
+    infra_failure_reason || infra_reason=$?
     if [ "$infra_reason" = "10" ]; then
       die "基础设施启动失败：宿主机端口被占用（与镜像仓库无关），处置见上方提示后重跑"
     fi
-    die "基础设施启动失败（官方源与国内加速均未成功）。两条可执行路径：
-     ① 指定 registry 前缀后重跑：export REGISTRY_PREFIX=docker.io/（用官方源）
-        或 export REGISTRY_PREFIX=<你的加速前缀>/；脚本会只试该前缀
+    die "基础设施启动失败（已走机器默认镜像源，脚本不再自动探测/切换加速源）。三条可执行路径：
+     ① 机器默认源不通时显式指定镜像前缀后重跑：export REGISTRY_PREFIX=docker.io/（强制官方源）
+        或 export REGISTRY_PREFIX=<你的加速前缀>/（如 docker.m.daocloud.io/）；有值即只按该前缀拉取
      ② 完全离线：在可联网机器 docker pull/save 三个镜像（mysql:8.4、nacos/nacos-server:v3.2.4、
-        redis:7-alpine），传上来 docker load，脚本检测到本地已有镜像会直接启动、不再拉取
+        redis:7-alpine），传上来 docker load，compose up 会直接用本地镜像、不再拉取
+     ③ 若日志提示自定义网络网段与残留旧网络重叠：docker network prune -f 后重跑
      （完整日志 /tmp/infra-up.log）"
   fi
+  ok "基础设施已启动（Nacos/Redis/MySQL，镜像源：${infra_registry_desc}）"
 fi
 
 NACOS_CONSOLE_URL="${NACOS_CONSOLE_URL:-http://localhost:8080}"
