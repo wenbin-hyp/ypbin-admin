@@ -23,7 +23,27 @@
     </properties>
 
     <dependencies>
-        <!-- 分析对象：admin 各模块的主源码与字节码，故以 test 作用域聚合（不污染任何其它模块） -->
+        <!--
+          分析对象：admin 各模块的主源码与字节码，故以 test 作用域聚合（不污染任何其它模块）。
+          ⛔ 这 7 个依赖**不是**可有可无的——它们正是本门禁的分析目标：CodingRulesTest#importClasses 用
+          `importPackages("cn.ypbin.admin")` 从测试类路径导入全仓真实字节码。删掉任何一个，该模块的类就
+          静默退出分析范围（三条无 `that()` 子句的字节码规则会退化成空转=恒真；带 `that()` 子句的
+          service/impl→provider 规则则会报 "failed to check any classes"）。因此「跨模块依赖脆弱」这件事
+          不能靠删依赖解决，已改为让合成夹具自包含（见 src/test/java/cn/ypbin/admin/arch/synthetic/**，
+          编译期不再引用任何跨模块真实类），并由
+          ArchRuleSelfCheckTest#syntheticFixturesMustBeSelfContained 防回归。
+          本清单 = 全仓含 src/main/java 的模块全集（ypbin-common / *-api / ypbin-service 下两域 / auth / gateway，
+          实测共 392 个 class，其中 service/impl 48 个、provider 13 个正是新规则的作用对象）；
+          新增业务模块时必须同步补一行，否则新域的规则覆盖会静默缺失。
+          ⚠️ 已知残留缺陷（2026-09-18 实测，未在本次「夹具自包含」范围内）：ypbin-system 的
+          spring-boot-maven-plugin:repackage 未配 classifier，其主构件是 BOOT-INF/classes 布局的 fat jar，
+          于是**带 package 阶段的全反应堆构建**（`mvn -B clean verify`）里本模块的测试类路径看不到
+          cn.ypbin.admin 的真实类：实测 CodingRulesTest.serviceImplShouldNotDependOnProviderPackages 报
+          "failed to check any classes"（48 个真实 service/impl 类一个都没扫到）。所幸这是**显式失败**
+          （ArchUnit 的 failOnEmptyShould 默认开启），不是静默假绿；`-pl ... -am test`（不带 package）
+          与 `-DskipTests clean package` 均正常。彻底修法需给 repackage 加 classifier，或让 CodingRulesTest
+          直接 import 各模块 target/classes——两者都需单独决策。
+        -->
         <dependency>
             <groupId>cn.ypbin.admin</groupId>
             <artifactId>ypbin-common</artifactId>

@@ -22,7 +22,13 @@ import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,10 +51,21 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * <p>注意：本类里的合成违规类位于<b>测试源码</b>，而源码级规则只扫 {@code src/main/java}，
  * 因此它们不会反过来把门禁自己搞红。</p>
  *
+ * <p><strong>夹具必须自包含</strong>（2026-09-18 真实故障的教训）：合成夹具只允许依赖本模块测试源码里
+ * 自造的玩具类（{@code synthetic/provider} 与 {@code synthetic/service/impl}），<b>不得 import 任何
+ * 跨模块真实类</b>。曾经直接 import {@code cn.ypbin.admin.system.provider.AdminDataScopeHandler}，
+ * 而 {@code ypbin-system} 的主构件是 {@code BOOT-INF/classes/...} 布局的 fat jar（裸 {@code -pl} 时还会命中
+ * {@code ~/.m2} 旧 jar），于是夹具的 import 会让 {@code testCompile} 报 {@code package ... does not exist}，
+ * <b>整仓构建失败、部署中断</b>。夹具的职责只是触发规则，不该成为门禁自己的脆弱点——
+ * {@link #syntheticFixturesMustBeSelfContained()} 把这条固定成构建失败。</p>
+ *
  * @author wenbin
  * @since 2026-09-16
  */
 class ArchRuleSelfCheckTest {
+
+    /** 合成夹具唯一允许 import 的 {@code cn.ypbin.admin} 前缀（跨模块真实类一律禁止，见自包含自检） */
+    private static final String CROSS_MODULE_IMPORT_ALLOWED = "import cn.ypbin.admin.arch.synthetic.";
 
     /** 谓词：调用 printStackTrace()（owner 多为 Throwable 子类，故按可赋值判定） */
     private static final DescribedPredicate<JavaMethodCall> CALLS_PRINT_STACK_TRACE =
@@ -134,18 +151,51 @@ class ArchRuleSelfCheckTest {
     void serviceImplToProviderRuleShouldBeAccurate() {
         ArchRule rule = CodingRulesTest.serviceImplShouldNotDependOnProvider();
 
-        // 命中：service/impl 持有 provider.AdminDataScopeHandler（复刻 2026-09-17 那次的真实回归形态）
+        // ① 命中：service/impl 持有 provider 玩具类 SomeProvider（复刻 2026-09-17 那次的真实回归形态）
         JavaClasses violators = new ClassFileImporter().importClasses(ProviderDependencyViolation.class);
         assertThatThrownBy(() -> rule.check(violators))
             .as("规则必须能抓住「实现层直连宿主端口适配实现」——抓不住说明包谓词写错，规则是恒真的假门禁")
             .isInstanceOf(AssertionError.class);
 
-        // 放过：service/impl 只依赖 JDK 类型；反向依赖（provider → service/impl）不在本条约束内
-        JavaClasses clean = new ClassFileImporter()
-            .importClasses(SupportOnlyDependency.class, ServiceImplDependentAdapter.class);
-        assertThat(rule.evaluate(clean).hasViolation())
-            .as("规则方向性必须正确：既不能把 service/impl 的正常依赖判违规，也不能拦 provider 的反向依赖")
+        // ② 放过：service/impl 只依赖 JDK 类型（规则不能把正常依赖判违规，否则是恒假的假门禁）
+        JavaClasses jdkOnly = new ClassFileImporter().importClasses(SupportOnlyDependency.class);
+        assertThat(rule.evaluate(jdkOnly).hasViolation())
+            .as("只依赖 java.util.List 的 service/impl 不得被判违规")
             .isFalse();
+
+        // ③ 放过：反向依赖 provider → service/impl 不在本条约束内（把两侧都导入，规则仍须放过）
+        JavaClasses reverseOnly = new ClassFileImporter()
+            .importClasses(ServiceImplDependentAdapter.class, SupportOnlyDependency.class);
+        assertThat(rule.evaluate(reverseOnly).hasViolation())
+            .as("规则方向性必须正确：provider 里的适配器依赖 service/impl 是反向依赖，不得被本条拦截")
+            .isFalse();
+    }
+
+    @Test
+    @DisplayName("合成夹具必须自包含：不得 import 本模块之外的 cn.ypbin.admin 真实类")
+    void syntheticFixturesMustBeSelfContained() throws IOException {
+        Path synthetic = SourceScan.repoRoot()
+            .resolve("ypbin-architecture-tests/src/test/java/cn/ypbin/admin/arch/synthetic");
+        assertThat(Files.isDirectory(synthetic)).as("夹具目录不存在，本自检会空转").isTrue();
+
+        List<String> fixtureSources = new ArrayList<>();
+        List<String> crossModuleImports = new ArrayList<>();
+        try (Stream<Path> files = Files.walk(synthetic)) {
+            for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
+                fixtureSources.add(SourceScan.relative(file));
+                for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                    if (line.startsWith("import cn.ypbin.admin.") && !line.startsWith(CROSS_MODULE_IMPORT_ALLOWED)) {
+                        crossModuleImports.add(SourceScan.relative(file) + " → " + line.trim());
+                    }
+                }
+            }
+        }
+        assertThat(fixtureSources).as("夹具源码一个都没扫到，本自检是空转").isNotEmpty();
+        assertThat(crossModuleImports)
+            .as("夹具一旦 import 跨模块真实类，构建路径差异（反应堆里 ypbin-system 被 repackage 成 BOOT-INF 布局的"
+                + " fat jar、裸 -pl 时命中 ~/.m2 旧 jar）就会让 testCompile 直接失败——2026-09-18 部署即因此中断。"
+                + "夹具只应依赖本模块测试源码里自造的玩具类")
+            .isEmpty();
     }
 
     /** 合成违规：printStackTrace() */
