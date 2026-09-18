@@ -43,7 +43,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wenbin-wb/ypbin-admin/main/d
 # 国内服务器（GitHub 不可达，自动降级 Gitee 同名镜像，需先在 Gitee 建 ypbin-* 三镜像并开启自动同步）：
 bash <(curl -fsSL https://gitee.com/wenbin_wb/ypbin-admin/raw/main/deploy/install.sh)
 # 仓库源策略：默认探测 GitHub（3s 快超时）→ 不可达切 Gitee → 均不可达请显式指定
-# YPBIN_REPO=...（如 ghproxy 代理前缀）重跑；拉基础镜像困难时可加 REGISTRY_PREFIX=docker.m.daocloud.io/
+# YPBIN_REPO=...（如 ghproxy 代理前缀）重跑；
+# 镜像源：默认用机器默认（Docker 守护进程 registry-mirrors，无配置即官方 Docker Hub），脚本不做镜像源探测；
+# 拉基础镜像困难时显式 export REGISTRY_PREFIX=docker.m.daocloud.io/（作用于基础设施与 xxl-job/nginx 镜像）
 
 # 无 Docker 模式（本机/轻量服务器，java -jar 直接启动；需外部 Nacos/Redis/MySQL）
 NO_DOCKER=1 NACOS_ADDR=localhost:8848 DB_HOST=localhost DB_USER=root DB_PASSWORD=xxx \

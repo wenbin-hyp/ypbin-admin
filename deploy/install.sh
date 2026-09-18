@@ -1036,6 +1036,14 @@ else
   set +a
 fi
 
+# REGISTRY_PREFIX 全局归一化：Docker 镜像引用是「前缀 + 官方镜像名」的字符串拼接，缺尾斜杠会拼出
+# `docker.m.daocloud.iomysql:8.4` / `docker.m.daocloud.ionginx:alpine` 这类无效引用（拉取必然失败）。
+# 在 .env 载入之后统一补一次并 export，使后续所有 compose 调用（基础设施、[6/7] 业务服务与
+# xxl-job/nginx 镜像、前端容器重建）口径一致；shell 变量优先于 --env-file，故 .env 里的原样值也被覆盖。
+if [ -n "${REGISTRY_PREFIX:-}" ]; then
+  export REGISTRY_PREFIX="${REGISTRY_PREFIX%/}/"
+fi
+
 # 向后兼容：旧 .env 缺新增凭据键时补生成（幂等；避免 compose :? 强制校验失败）
 env_key_backfill() { # $1=键名 $2=取值命令（仅缺键时才执行，命令为内部固定串）
   local key="$1" val
@@ -1089,13 +1097,11 @@ else
   info "[5.5/7] 启动基础设施（Nacos/Redis/MySQL）"
   cd "$ROOT/ypbin-admin/deploy"
   # 基础设施镜像只走「一次 compose up」，不做任何镜像源探测/遍历：
-  # REGISTRY_PREFIX 有值（使用者显式 export，或已在复用的 .env 中设置）→ 按该前缀拉取；
-  # 为空 → 不带前缀，直接用 Docker 守护进程默认源（其配置的 registry-mirrors；无配置即官方 Docker Hub）。
+  # REGISTRY_PREFIX 有值（使用者显式 export，或已在复用的 .env 中设置；尾斜杠已在 [5/7] 全局归一化）
+  # → 按该前缀拉取；为空 → 不带前缀，直接用 Docker 守护进程默认源
+  # （其配置的 registry-mirrors；无配置即官方 Docker Hub）。
   infra_registry_prefix="${REGISTRY_PREFIX:-}"
   if [ -n "$infra_registry_prefix" ]; then
-    # 归一化尾斜杠（与旧探测路径一致）：`docker.m.daocloud.io` 与 `docker.m.daocloud.io/` 等价；
-    # 缺尾斜杠会拼出 `docker.m.daocloud.iomysql:8.4` 这类无效引用，拉取必然失败。
-    infra_registry_prefix="${infra_registry_prefix%/}/"
     infra_registry_desc="显式前缀 ${infra_registry_prefix}"
     info "基础设施镜像按显式 REGISTRY_PREFIX=${infra_registry_prefix} 拉取"
   else
